@@ -22,12 +22,33 @@ const messages = async (id) => {
   } while (cursor)
   return out
 }
+// Child (subagent) sessions, recursively. OpenCode 2.2.7 lists them with GET /api/session?parentID=<id>
+// (there is no /children route). Retrieval errors are fatal: a silently missing subagent would undercount usage.
+const listChildren = async (parentID) => {
+  const out = []
+  let cursor
+  do {
+    const page = await get(`/api/session?parentID=${encodeURIComponent(parentID)}&limit=200${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`)
+    out.push(...page.data)
+    cursor = page.data.length === 200 ? page.cursor?.next : undefined
+  } while (cursor)
+  return out
+}
 const sessions = [sessionID]
-// Include child (subagent) sessions when the server lists them.
-try {
-  for (const s of (await get(`/api/session/${sessionID}/children`)).data) sessions.push(s.id)
-} catch {}
-const sum = { requests: 0, inputUncached: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, providerCostUSD: 0, peakContext: 0, compactions: 0, toolCalls: 0, toolErrors: 0, failedSteps: 0, firstAt: Infinity, lastAt: 0 }
+for (let i = 0; i < sessions.length; i++) for (const c of await listChildren(sessions[i])) if (!sessions.includes(c.id)) sessions.push(c.id)
+// Session-level totals kept by OpenCode, for reconciliation with the per-message sums below.
+const sessionTotals = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }
+for (const id of sessions) {
+  const info = (await get(`/api/session/${id}`)).data ?? {}
+  const t = info.tokens ?? {}
+  sessionTotals.input += t.input ?? 0
+  sessionTotals.output += t.output ?? 0
+  sessionTotals.reasoning += t.reasoning ?? 0
+  sessionTotals.cacheRead += t.cache?.read ?? 0
+  sessionTotals.cacheWrite += t.cache?.write ?? 0
+  sessionTotals.cost += Number(info.cost) || 0
+}
+const sum = { requests: 0, inputUncached: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, providerCostUSD: 0, costReportedSteps: 0, peakContext: 0, compactions: 0, toolCalls: 0, toolErrors: 0, failedSteps: 0, firstAt: Infinity, lastAt: 0 }
 for (const id of sessions) {
   for (const m of await messages(id)) {
     if (m.type === "compaction" || m.type === "summary") sum.compactions++
@@ -46,6 +67,7 @@ for (const id of sessions) {
     sum.output += t.output ?? 0
     sum.reasoning += t.reasoning ?? 0
     sum.providerCostUSD += Number(m.cost) || 0
+    if (Number(m.cost) > 0) sum.costReportedSteps++
     sum.peakContext = Math.max(sum.peakContext, (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0))
   }
 }
@@ -75,10 +97,33 @@ if (flag === "--jev-ledger" && jevFile) {
 const durationSec = sum.lastAt > sum.firstAt ? Math.round((sum.lastAt - sum.firstAt) / 1000) : 0
 delete sum.firstAt
 delete sum.lastAt
+// A provider that reports no cost (0 on every step) means unknown cost, not free usage.
+const providerCostUSD = sum.costReportedSteps > 0 ? sum.providerCostUSD : null
+const costReportedSteps = sum.costReportedSteps
+delete sum.costReportedSteps
+sum.providerCostUSD = providerCostUSD
+const diff = {
+  input: sessionTotals.input - sum.inputUncached,
+  output: sessionTotals.output - sum.output,
+  reasoning: sessionTotals.reasoning - sum.reasoning,
+  cacheRead: sessionTotals.cacheRead - sum.cacheRead,
+  cacheWrite: sessionTotals.cacheWrite - sum.cacheWrite,
+}
 console.log(JSON.stringify({
   sessions: sessions.length,
+  sessionIDs: sessions,
   durationSec,
-  measured: { ...sum, note: "tokens and cost as reported by OpenCode/provider; cost is 0 where the provider reports none" },
+  measured: {
+    ...sum,
+    note: "tokens as reported by the provider per assistant message; providerCostUSD is null when the provider reported no cost (unknown, not free)",
+    costReportedSteps,
+  },
+  sessionTotals: {
+    ...sessionTotals,
+    cost: sum.providerCostUSD === null && sessionTotals.cost === 0 ? null : sessionTotals.cost,
+    note: "OpenCode's session-level totals; they also include auxiliary requests (e.g. title generation) that have no assistant message",
+    differenceFromMessages: diff,
+  },
   jev,
-  totalCostUSD: { provider: sum.providerCostUSD, jevEstimated: jev?.costUSDEstimated ?? 0 },
+  totalCostUSD: { provider: providerCostUSD, jevEstimated: jev?.costUSDEstimated ?? 0 },
 }, null, 2))

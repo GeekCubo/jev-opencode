@@ -4,6 +4,8 @@
  * - estimated: computed locally (character-based token estimates, projected savings)
  */
 export interface Counters {
+  /** Evaluations started (successful = runs; failed = failures; budget-blocked counted separately). */
+  attempts: number
   runs: number
   dryRuns: number
   appliedRuns: number
@@ -42,7 +44,7 @@ export interface Counters {
 }
 
 export const emptyCounters = (): Counters => ({
-  runs: 0, dryRuns: 0, appliedRuns: 0, skippedInsufficient: 0, failures: 0, rateLimited: 0, budgetBlocked: 0,
+  attempts: 0, runs: 0, dryRuns: 0, appliedRuns: 0, skippedInsufficient: 0, failures: 0, rateLimited: 0, budgetBlocked: 0,
   nativeFallbacks: 0, nativeCompactions: 0, jevRequests: 0, jevInputTokensMeasured: 0, jevInputTokensEstimated: 0,
   jevCostUSD: 0, durationMsTotal: 0, callsKept: 0, callsPinned: 0, resultsTruncated: 0, callsDropped: 0,
   contextTokensBefore: 0, contextTokensAfter: 0, tokensRemovedFromRequests: 0, requestsPruned: 0,
@@ -143,6 +145,7 @@ const usd = (n: number) => `$${n.toFixed(n < 0.01 ? 5 : 4)}`
 export function formatStats(label: string, c: Counters): string {
   return [
     `${label}`,
+    `  Evaluation attempts: ${c.attempts}; successful ${c.runs}; failed ${c.failures}; pruning applied ${c.appliedRuns} time(s), to ${c.requestsPruned} outgoing request(s)`,
     `  Jev runs: ${c.runs} (dry-run ${c.dryRuns}, applied ${c.appliedRuns}, insufficient ${c.skippedInsufficient}, failed ${c.failures}, budget-blocked ${c.budgetBlocked}, 429s ${c.rateLimited})`,
     `  Jev requests: ${c.jevRequests}; input tokens measured ${c.jevInputTokensMeasured}, estimated ${c.jevInputTokensEstimated}; Jev cost ${usd(c.jevCostUSD)} (tokens × list price)`,
     `  Avg run duration: ${c.runs ? Math.round(c.durationMsTotal / c.runs) : 0} ms`,

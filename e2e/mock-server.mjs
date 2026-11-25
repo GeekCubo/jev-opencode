@@ -49,7 +49,10 @@ http.createServer((req, res) => {
       const lastUser = [...msgs].reverse().find((m) => m.role === "user")
       const isSummary = JSON.stringify(lastUser ?? "").includes("summar")
       fs.appendFileSync(log, JSON.stringify({ kind: "llm", model: json.model, bytes: body.length, messages: msgs.length, toolMsgs, isSummary, sysChars: JSON.stringify(msgs.filter((m) => m.role === "system")).length }) + "\n")
-      const usage = { prompt_tokens: Math.ceil(body.length / 4), completion_tokens: 5, total_tokens: Math.ceil(body.length / 4) + 5 }
+      // OVERHEAD simulates provider-side tokens the plugin cannot see (system prompt, tool schemas), served from cache.
+      const overhead = Number(process.env.OVERHEAD ?? 0)
+      const prompt = Math.ceil(body.length / 4) + overhead
+      const usage = { prompt_tokens: prompt, completion_tokens: 5, total_tokens: prompt + 5, ...(overhead ? { prompt_tokens_details: { cached_tokens: overhead } } : {}) }
       if (isSummary || toolMsgs >= STEPS || json.tools === undefined)
         return sse(res, [chunk({ role: "assistant", content: isSummary ? "## Objective\nmock summary" : "Done." }), chunk({}, "stop", usage)])
       const i = toolMsgs

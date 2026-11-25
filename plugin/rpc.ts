@@ -17,6 +17,62 @@ const textOutput = {
 /** Display state shared by every client. */
 export type JevState = "active" | "dry-run" | "off" | "evaluating" | "unavailable" | "budget"
 
+/** Outcome of the latest trigger check (or evaluation) for a session. */
+export type TriggerReason =
+  | "disabled"
+  | "waiting_threshold"
+  | "waiting_growth"
+  | "cooldown"
+  | "no_eligible_results"
+  | "no_new_tool_calls"
+  | "budget_exhausted"
+  | "auth_unavailable"
+  | "concurrency_limit"
+  | "evaluating"
+  | "evaluation_failed"
+  | "insufficient_reduction"
+  | "evaluated_dry_run"
+  | "pruning_active"
+
+export const TRIGGER_LABEL: Record<TriggerReason, string> = {
+  disabled: "Disabled",
+  waiting_threshold: "Waiting for context threshold",
+  waiting_growth: "Waiting for context growth",
+  cooldown: "Cooldown",
+  no_eligible_results: "No eligible tool results",
+  no_new_tool_calls: "No changed tool calls",
+  budget_exhausted: "Budget exhausted",
+  auth_unavailable: "Authentication unavailable",
+  concurrency_limit: "Waiting for another evaluation",
+  evaluating: "Evaluation in progress",
+  evaluation_failed: "Evaluation failed",
+  insufficient_reduction: "Evaluated, insufficient reduction",
+  evaluated_dry_run: "Evaluated (dry-run, not applied)",
+  pruning_active: "Pruning active",
+}
+
+/** Per-session trigger diagnostics (in memory; numbers and codes only, never content). */
+export interface TriggerDiagnostics {
+  reason: TriggerReason
+  /** Last context size reported by the provider for this session (input + cache read + cache write), if seen. */
+  providerContextTokens: number | null
+  /** Character-based estimate of the messages Jev sees (excludes system prompt and tool definitions). */
+  estimatedContextTokens: number
+  /** Context size the trigger compares with the threshold. */
+  triggerContextTokens: number
+  thresholdTokens: number
+  growthTokens: number
+  minGrowthTokens: number
+  cooldownRemainingMs: number
+  eligibleResults: number
+  protectedResults: number
+  /** True when every gate passed on the last check. */
+  eligible: boolean
+  checkedAt: string
+  lastError: string | null
+  lastErrorAt: string | null
+}
+
 export interface JevSessionSnapshot {
   /** Jev evaluations run for this session (persisted across reloads and restarts). */
   evaluations: number
@@ -40,6 +96,9 @@ export interface JevSessionSnapshot {
   pruned: { dropped: number; truncated: number }
   lastEvaluationAt: string | null
   evaluating: boolean
+  attempts: number
+  /** Null until this server instance has seen a request for the session (e.g. right after a reload). */
+  trigger: TriggerDiagnostics | null
 }
 
 export interface JevSnapshot {

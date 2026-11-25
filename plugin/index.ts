@@ -13,10 +13,10 @@
 import type { Plugin } from "@opencode/plugin"
 import { ConfigError, endpointUrl, exceeds, formatLimit, reached, wireModel, priceFor, resolveConfig, thresholdFor, type JevConfig, type Mode } from "./config.ts"
 import { createJevClient, resolveApiKey } from "./jev.ts"
-import { prune, type OcMessage, type OcPart } from "./compaction.ts"
+import { countCandidates, prune, type OcMessage, type OcPart } from "./compaction.ts"
 import { add, emptyCounters, formatStats, type Counters } from "./statistics.ts"
 import { FileLedger, reservedFor, session as session$ } from "./ledger-file.ts"
-import { JevRpc, type JevSnapshot } from "./rpc.ts"
+import { JevRpc, TRIGGER_LABEL, type JevSnapshot, type TriggerDiagnostics, type TriggerReason } from "./rpc.ts"
 import { errorMessage, estimateTokens, hash, ledgerPath, statsSnapshotPath } from "./util.ts"
 import { mkdir, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
@@ -47,6 +47,12 @@ interface SessionState {
   awaitingCacheObservation: boolean
   lastEvaluationAt?: number
   budgetBlocked?: boolean
+  /** Estimated tokens of the messages actually sent with the latest request. */
+  sentEstimate?: number
+  /** Provider-reported context of the latest step (input + cache read + cache write) and the estimate it corresponds to. */
+  providerContext?: number
+  providerBaseline?: number
+  trigger?: TriggerDiagnostics
 }
 
 export interface Deps {
@@ -213,10 +219,19 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
       let emitChanged: (sessionID?: string) => void = () => {}
       const session = (id: string): SessionState => {
         let s = sessions.get(id)
-        if (!s) sessions.set(id, (s = { id, lastRunTokens: 0, lastRunAt: 0, force: false, spentUSD: 0, counters: emptyCounters(), pruneChangedAt: 0, awaitingCacheObservation: false }))
+        if (!s) {
+          sessions.set(id, (s = { id, lastRunTokens: 0, lastRunAt: 0, force: false, spentUSD: 0, counters: emptyCounters(), pruneChangedAt: 0, awaitingCacheObservation: false }))
+          // After a reload, resume from the last provider-reported context instead of the message-only estimate.
+          try {
+            const t = ledger.read().sessions[id]?.trigger as TriggerDiagnostics | undefined
+            if (t && typeof t.providerContextTokens === "number") (s.providerContext = t.providerContextTokens), (s.providerBaseline = t.estimatedContextTokens)
+          } catch {}
+        }
         return s
       }
       const pending = new Map<string, Partial<Counters>>()
+      /** Sessions whose trigger diagnostics changed since the last flush. */
+      const triggerDirty = new Set<string>()
       const bump = (s: SessionState, delta: Partial<Counters>) => {
         add(s.counters, delta)
         const p = pending.get(s.id) ?? {}
@@ -224,9 +239,11 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
         pending.set(s.id, p)
       }
       const flushCounters = () => {
-        if (!pending.size) return
+        if (!pending.size && !triggerDirty.size) return
         const batch = [...pending]
         pending.clear()
+        for (const id of triggerDirty) if (!pending.has(id) && !batch.some(([b]) => b === id)) batch.push([id, {}])
+        triggerDirty.clear()
         try {
           ledger.update((d) => {
             for (const [id, delta] of batch) {
@@ -236,6 +253,7 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
                 d.counters[k] = (d.counters[k] ?? 0) + (v as number)
               }
               const st = sessions.get(id)
+              if (st?.trigger) rec.trigger = { ...st.trigger }
               if (st?.lastEvaluationAt) rec.lastEvaluationAt = Math.max(rec.lastEvaluationAt ?? 0, st.lastEvaluationAt)
               rec.updatedAt = now()
             }
@@ -283,6 +301,7 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
                       lastEvaluationAt: r.lastEvaluationAt ? new Date(r.lastEvaluationAt).toISOString() : null,
                       resets: r.resets ?? 0,
                       pruned: st?.decisions ? { dropped: st.decisions.drop.size, truncated: st.decisions.truncate.size } : null,
+                      trigger: triggerView(id, r.trigger),
                       counters: r.counters,
                     }]
                   }),
@@ -326,11 +345,19 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
       let globalInflight = 0
       let reservationSeq = 0
       const MAX_GLOBAL_CONCURRENCY = 2
+      const KEEP_ERRORS_WITHIN = 20
+      const protectTools = config.protectTools.map((p) => new RegExp(p, "i"))
 
-      const runJev = async (sessionID: string, s: SessionState, messages: readonly OcMessage[], tokens: number, sessionMode: Mode) => {
+      const runJev = async (sessionID: string, s: SessionState, messages: readonly OcMessage[], tokens: number, sessionMode: Mode, triggerTokens = tokens) => {
+        const outcome = (reason: TriggerReason, error?: string) => {
+          if (!s.trigger) return
+          s.trigger.reason = reason
+          if (error) (s.trigger.lastError = error), (s.trigger.lastErrorAt = new Date(now()).toISOString())
+        }
         if (priceError) throw new ConfigError(priceError)
         const key = await getKey()
-        if (!key) throw new ConfigError(`no API key for ${config.endpoint}`)
+        if (!key) throw new AuthError(`no API key for ${config.endpoint}`)
+        bump(s, { attempts: 1 })
         const started = now()
         const reservations: string[] = []
         const client = createJevClient(
@@ -384,7 +411,7 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
             truncateHeadChars: config.truncateHeadChars,
             maxStateTokens: config.maxStateTokens,
             maxRequestTokens: config.maxRequestTokens,
-            protection: { protectTools: config.protectTools.map((p) => new RegExp(p, "i")), keepErrorsWithinMessages: 20, alreadyDecided: s.decisions?.evaluated },
+            protection: { protectTools, keepErrorsWithinMessages: KEEP_ERRORS_WITHIN, alreadyDecided: s.decisions?.evaluated },
           }, rebuildMessage)
           const st = out.result.stats
           const after = estimateContextTokens(out.messages)
@@ -410,6 +437,7 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
             // Record what was evaluated so dry-run never pays twice for the same calls; nothing is applied.
             s.decisions = { drop: new Set(), truncate: new Map(), evaluated }
             bump(s, { dryRuns: 1, ...(sufficient ? {} : { skippedInsufficient: 1 }) })
+            outcome("evaluated_dry_run")
             log("info", `dry-run session ${sessionID}: ~${tokens} → ~${after} tokens (${(out.ratio * 100).toFixed(1)}% chars), ${st.requests} Jev request(s), not applied`)
             return
           }
@@ -417,6 +445,7 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
             // Remember what was asked so unchanged calls are not paid for again.
             s.decisions = { drop: new Set(s.decisions?.drop ?? []), truncate: new Map(s.decisions?.truncate ?? []), evaluated }
             bump(s, { skippedInsufficient: 1, ...(config.nativeFallback ? { nativeFallbacks: 1 } : {}) })
+            outcome("insufficient_reduction")
             log("info", `session ${sessionID}: reduction ${(out.ratio * 100).toFixed(1)}% below ${config.minReductionRatio * 100}%; native compaction remains in charge`)
             return
           }
@@ -442,12 +471,13 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
           s.pruneChangedAt = now()
           s.awaitingCacheObservation = true
           bump(s, { appliedRuns: 1 })
+          outcome("pruning_active")
         } catch (e) {
-          if (e instanceof BudgetError) (bump(s, { budgetBlocked: 1 }), (s.budgetBlocked = true))
-          else bump(s, { failures: 1, rateLimited: client.usage.rateLimited, ...(config.nativeFallback ? { nativeFallbacks: 1 } : {}) })
+          if (e instanceof BudgetError) (bump(s, { budgetBlocked: 1 }), (s.budgetBlocked = true), outcome("budget_exhausted"))
+          else (bump(s, { failures: 1, rateLimited: client.usage.rateLimited, ...(config.nativeFallback ? { nativeFallbacks: 1 } : {}) }), outcome("evaluation_failed", errorMessage(e)))
           log("warn", `session ${sessionID}: Jev skipped (${errorMessage(e)}); request sent unpruned`)
         } finally {
-          s.lastRunTokens = tokens
+          s.lastRunTokens = triggerTokens
           s.lastRunAt = now()
           persist()
           emitChanged(sessionID)
@@ -459,37 +489,113 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
         if (event.messages.some(isStatusMessage)) event.messages = event.messages.filter((m) => !isStatusMessage(m))
         ownedHere.add(event.sessionID)
         const sessionMode = modeFor(event.sessionID)
-        if (sessionMode === "off") return
+        if (sessionMode === "off") {
+          const st = sessions.get(event.sessionID)
+          if (st?.trigger) (st.trigger.reason = "disabled"), (st.trigger.eligible = false)
+          return
+        }
         const s = session(event.sessionID)
         // Thresholds and Jev state are based on what is actually sent (cached decisions applied).
         const current = sessionMode === "active" && s.decisions ? applyCached(event.messages, s.decisions).messages : event.messages
         const tokens = estimateContextTokens(current)
+        s.sentEstimate = tokens
         const info = await modelInfo(event.model)
         const threshold = thresholdFor(config, info.context)
+        // The message-only estimate excludes the system prompt and tool definitions and undercounts dense content
+        // (code, shell output), so on its own it can stay far below what the provider actually receives.
+        // When the provider has reported this session's context, compare that figure plus estimated growth since.
+        const triggerTokens = s.providerContext !== undefined && s.providerBaseline !== undefined
+          ? s.providerContext + Math.max(0, tokens - s.providerBaseline)
+          : tokens
         const fingerprint = hash(current.flatMap((m) => m.content.filter((p) => p.type === "tool-call").map((p) => String(p.id))).join(","))
-        const due =
-          s.force ||
-          (fingerprint !== s.lastFingerprint &&
-          (tokens >= threshold &&
-            tokens - s.lastRunTokens >= config.minGrowthTokens &&
-            now() - s.lastRunAt >= config.cooldownMs))
-        if (due && !s.inflight && globalInflight < MAX_GLOBAL_CONCURRENCY && !priceError) {
+        const growth = triggerTokens - s.lastRunTokens
+        const cooldownRemainingMs = Math.max(0, config.cooldownMs - (now() - s.lastRunAt))
+        const candidates = countCandidates(current, config.preserveRecentMessages, {
+          protectTools: protectTools,
+          keepErrorsWithinMessages: KEEP_ERRORS_WITHIN,
+          alreadyDecided: s.decisions?.evaluated,
+        })
+        const previous = s.trigger
+        const t: TriggerDiagnostics = (s.trigger = {
+          reason: "waiting_threshold",
+          providerContextTokens: s.providerContext ?? null,
+          estimatedContextTokens: tokens,
+          triggerContextTokens: triggerTokens,
+          thresholdTokens: threshold,
+          growthTokens: growth,
+          minGrowthTokens: config.minGrowthTokens,
+          cooldownRemainingMs,
+          eligibleResults: candidates.eligible,
+          protectedResults: candidates.protected,
+          eligible: false,
+          checkedAt: new Date(now()).toISOString(),
+          lastError: previous?.lastError ?? null,
+          lastErrorAt: previous?.lastErrorAt ?? null,
+        })
+        const forced = s.force
+        const blocked = (): TriggerReason | undefined => {
+          if (priceError) return "disabled"
+          if (!forced) {
+            if (triggerTokens < threshold) return "waiting_threshold"
+            if (growth < config.minGrowthTokens) return "waiting_growth"
+            if (cooldownRemainingMs > 0) return "cooldown"
+            if (fingerprint === s.lastFingerprint) return "no_new_tool_calls"
+          }
+          if (candidates.eligible === 0) return "no_eligible_results"
+          if (s.inflight) return "evaluating"
+          if (globalInflight >= MAX_GLOBAL_CONCURRENCY) return "concurrency_limit"
+          return undefined
+        }
+        let reason = blocked()
+        if (!reason) {
+          // Local, synchronous check (no request, no await, so the in-flight guard below stays race-free).
+          try {
+            const d = ledger.read()
+            if (reached(config.budget.perDayUSD, d.days[day()] ?? 0) || reached(config.budget.perSessionUSD, d.sessions[event.sessionID]?.spentUSD ?? 0)) reason = "budget_exhausted"
+          } catch {}
+        }
+        if (reason) {
+          // Between evaluations, a session with applied decisions reports that pruning is active.
+          const waiting = reason === "waiting_threshold" || reason === "waiting_growth" || reason === "cooldown" || reason === "no_new_tool_calls" || reason === "no_eligible_results"
+          const pruning = sessionMode === "active" && !!s.decisions && s.decisions.drop.size + s.decisions.truncate.size > 0
+          t.reason = waiting && pruning ? "pruning_active" : reason
+          if (reason === "budget_exhausted") s.budgetBlocked = true
+          if (reason === "auth_unavailable") (t.lastError = `no API key for ${config.endpoint}`), (t.lastErrorAt = t.checkedAt)
+          if (forced && reason !== "evaluating" && reason !== "concurrency_limit") s.force = false
+          // Refresh indicators when the outcome changes (not on every request).
+          if (previous?.reason !== t.reason) emitChanged(event.sessionID)
+        } else {
+          t.eligible = true
+          t.reason = "evaluating"
           s.force = false
           s.lastFingerprint = fingerprint
           globalInflight++
           emitChanged(event.sessionID)
-          s.inflight = runJev(event.sessionID, s, current, tokens, sessionMode).finally(() => {
+          s.inflight = runJev(event.sessionID, s, current, tokens, sessionMode, triggerTokens).finally(() => {
             globalInflight--
             s.inflight = undefined
           })
-          await s.inflight
+          try {
+            await s.inflight
+          } catch (e) {
+            // Fail open: never throw from the hook; the request goes out unpruned.
+            const auth = e instanceof AuthError
+            if (!auth) bump(s, { failures: 1 })
+            ;(t.reason = auth ? "auth_unavailable" : "evaluation_failed"), (t.lastError = errorMessage(e)), (t.lastErrorAt = new Date(now()).toISOString())
+            log("warn", `session ${event.sessionID}: Jev skipped (${t.lastError}); request sent unpruned`)
+          }
         }
+        triggerDirty.add(event.sessionID)
+        persist()
         if (sessionMode !== "active" || !s.decisions) return
         const before = estimateContextTokens(event.messages)
         const applied = applyCached(event.messages, s.decisions)
         if (!applied.changed) return
         event.messages = applied.messages
-        const removed = Math.max(0, before - estimateContextTokens(applied.messages))
+        const sent = estimateContextTokens(applied.messages)
+        // Pair the next provider-reported context with what was actually sent (after pruning).
+        s.sentEstimate = sent
+        const removed = Math.max(0, before - sent)
         bump(s, { requestsPruned: 1, tokensRemovedFromRequests: removed, estimatedSavingsUSD: info.input ? (removed * info.input) / 1e6 : 0 })
         persist()
       }
@@ -559,12 +665,19 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
               // Counted by the instance serving this session; if this instance has not seen a request for it yet
               // (e.g. right after a reload), count it only when it is the session's known owner in the ledger.
               const id = ev.data?.sessionID
-              if (s) (bump(s, { nativeCompactions: 1 }), (s.lastRunTokens = 0), (s.decisions = undefined), persist())
+              if (s) (bump(s, { nativeCompactions: 1 }), (s.lastRunTokens = 0), (s.decisions = undefined), (s.providerContext = s.providerBaseline = undefined), persist())
               else if (id && ownedHere.has(id)) (bump(session(id), { nativeCompactions: 1 }), persist())
               continue
             }
             const t = ev.data?.tokens
             if (!s || !t) continue
+            // Provider-reported context of this step (uncached + cached input), paired with the estimate of what was sent.
+            if (s.sentEstimate !== undefined) {
+              s.providerContext = (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0)
+              s.providerBaseline = s.sentEstimate
+              // Keep the persisted diagnostics paired (provider figure and the estimate of the same request).
+              if (s.trigger) (s.trigger.providerContextTokens = s.providerContext ?? null), (s.trigger.estimatedContextTokens = s.sentEstimate), triggerDirty.add(s.id)
+            }
             bump(s, { primarySteps: 1, primaryCostUSD: Number(ev.data.cost) || 0, primaryInputTokens: t.input ?? 0, cacheReadTokens: t.cache?.read ?? 0, cacheWriteTokens: t.cache?.write ?? 0 })
             if (s.awaitingCacheObservation) (bump(s, { cacheWriteAfterPruneChange: t.cache?.write ?? 0 }), (s.awaitingCacheObservation = false))
             persist()
@@ -581,6 +694,32 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
         emitChanged()
       }
       const noSession = "No session yet: open or start a session first (this command acts on the current session)."
+
+      /** Live trigger diagnostics; cooldown is recomputed so it counts down between requests. */
+      const triggerView = (sessionID: string, stored?: Record<string, unknown>): TriggerDiagnostics | null => {
+        const st = sessions.get(sessionID)
+        const t = (st?.trigger ?? stored) as TriggerDiagnostics | undefined
+        if (!t) return null
+        const eff = modeFor(sessionID)
+        const elapsed = now() - Date.parse(t.checkedAt)
+        return {
+          ...t,
+          reason: eff === "off" ? "disabled" : st?.inflight ? "evaluating" : t.reason,
+          cooldownRemainingMs: st ? Math.max(0, config.cooldownMs - (now() - st.lastRunAt)) : Math.max(0, t.cooldownRemainingMs - elapsed),
+        }
+      }
+      const triggerLines = (sessionID: string, stored?: Record<string, unknown>): string[] => {
+        const t = triggerView(sessionID, stored)
+        if (!t) return ["trigger: not checked yet (checked on the session's next model request)"]
+        const k = (n: number) => `${Math.round(n / 100) / 10}k`
+        return [
+          `trigger: ${TRIGGER_LABEL[t.reason]} [${t.reason}] (checked ${t.checkedAt})`,
+          `  context: provider-reported ${t.providerContextTokens === null ? "n/a" : k(t.providerContextTokens)}, estimated messages ${k(t.estimatedContextTokens)}, used for trigger ${k(t.triggerContextTokens)} / threshold ${k(t.thresholdTokens)}`,
+          `  growth since last evaluation ${k(t.growthTokens)} / ${k(t.minGrowthTokens)}; cooldown remaining ${Math.ceil(t.cooldownRemainingMs / 1000)}s`,
+          `  tool results: ${t.eligibleResults} eligible, ${t.protectedResults} pinned (protected, recent or already evaluated); eligible now: ${t.eligible ? "yes" : "no"}`,
+          ...(t.lastError ? [`  last error: ${t.lastError} (${t.lastErrorAt})`] : []),
+        ]
+      }
 
       /** Persisted per-session view: one consistent source for indicators, /jev-stats, /jev-status and the CLI. */
       const sessionView = (sessionID: string) => {
@@ -605,6 +744,9 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
           `endpoint=${config.endpoint}, model=${config.model} ($${price}/Mtok input)${priceError ? `; BLOCKED: ${priceError}` : ""}`,
           `threshold=min(${config.compactAtTokens}, ${config.compactAtContextFraction}×window) tokens, keepThreshold=${config.keepThreshold}, minReduction=${config.minReductionRatio}`,
           `spend (est.): ${sessionID ? `session $${(rec?.spentUSD ?? 0).toFixed(5)} / ${formatLimit(config.budget.perSessionUSD)}, ` : ""}today $${day$.toFixed(5)} / ${formatLimit(config.budget.perDayUSD)}`,
+          sessionID
+            ? triggerLines(sessionID, rec?.trigger).join("\n")
+            : "",
           sessionID
             ? `pruning applied now: ${st?.decisions && (st.decisions.drop.size || st.decisions.truncate.size) ? `${st.decisions.drop.size} dropped, ${st.decisions.truncate.size} truncated` : "none"} (decisions are in memory; history below is persisted)`
             : "",
@@ -649,6 +791,8 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
                 nativeCompactions: c.nativeCompactions,
                 resets: c.resets,
                 evaluating: !!st?.inflight,
+                attempts: c.attempts,
+                trigger: triggerView(sessionID, rec?.trigger),
               }
             : null,
         }
@@ -676,7 +820,7 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
           const v = sessionID ? sessionView(sessionID) : undefined
           const d = v?.d ?? ledger.read()
           const head = v
-            ? `This session: mode ${modeFor(sessionID!)} (${modeSource(sessionID)}); last successful evaluation ${v.rec?.lastEvaluationAt ? new Date(v.rec.lastEvaluationAt).toISOString() : "never"}; resets ${v.counters.resets}\n${formatStats("This session (persisted)", v.counters)}\n`
+            ? `This session: mode ${modeFor(sessionID!)} (${modeSource(sessionID)}); last successful evaluation ${v.rec?.lastEvaluationAt ? new Date(v.rec.lastEvaluationAt).toISOString() : "never"}; resets ${v.counters.resets}\n${triggerLines(sessionID!, v.rec?.trigger).join("\n")}\n${formatStats("This session (persisted)", v.counters)}\n`
             : ""
           return head + formatStats("All sessions (persisted)", { ...emptyCounters(), ...d.counters }) + `\n  Today (UTC ${day()}): $${(d.days[day()] ?? 0).toFixed(5)} / ${formatLimit(config.budget.perDayUSD)} (est.)`
         },
@@ -765,5 +909,6 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
 }
 
 class BudgetError extends Error {}
+class AuthError extends Error {}
 
 export default createPlugin()

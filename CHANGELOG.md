@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1 (2026-11-25), development release
+
+- Fixed: evaluations could never trigger in real sessions. The trigger compared a message-only character estimate (which excludes the system prompt, instructions and tool definitions, and undercounts code) with the threshold; in a real session the estimate stayed near 58% of the provider-reported context. The trigger now uses the provider-reported context of the previous step (uncached + cached input) plus estimated growth, falling back to the estimate until the first report. Thresholds and defaults are unchanged. See `docs/TRIGGER.md`.
+- Evaluation diagnostics in `/jev-status`, `/jev-stats`, the TUI sidebar, the Desktop pill and the CLI: structured reason codes (disabled, waiting for threshold or growth, cooldown, no eligible or changed tool calls, budget, authentication, evaluating, failed, insufficient reduction, pruning active), provider-reported vs estimated context, threshold, growth, cooldown remaining, eligible and pinned tool results, last check and last sanitized error. Persisted per session; numbers and codes only.
+- New counter: evaluation attempts.
+- Benchmark collector: subagent sessions are discovered recursively via `?parentID=` (the previous `/children` route doesn't exist in OpenCode 2.2.7 and its error was ignored); retrieval errors now abort; unreported provider cost is `null` (unknown) instead of 0; session-level totals are reported next to the per-message sums.
+- Tests: trigger regression tests through the context hook, and an opt-in local replay of an exported session.
+- Known limitations: real-world cost savings are unmeasured; negative reduction statistics seen in some sessions are not yet explained.
+
 ## 0.2.0 (2026-11-25), development release
 
 - Shared accounting file with an exclusive lock, so no updates are lost across projects or processes. Atomic budget reservations with release on completion or failure and recovery from abandoned reservations; mode 600; numbers only.

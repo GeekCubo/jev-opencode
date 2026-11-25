@@ -68,7 +68,7 @@ Order and repetitions:
 
 ## Cost control
 
-- **Coding-model spend.** Before you start, put a hard limit at the provider (Apixo dashboard or key limit) for the benchmark.
+- **Coding-model spend.** Before you start, put a hard limit at the provider (provider dashboard or key limit) for the benchmark.
 - **Estimate.** Expected spend ≈ runs × typical task cost. With 3 tasks × 2 groups × 3 runs, that is 18 sessions.
 - **Jev spend.** The B instance keeps the defaults of $0.25 per session and $1.00 per day. These cap Jev, not the coding model.
 - **Stop rule.** Stop a run that exceeds 2× the median of its group, and record it as such. Don't retry failed runs silently; record them.
@@ -88,6 +88,11 @@ Order and repetitions:
 | Context before/after pruning, tokens removed | accounting file | estimate |
 | Duration | first to last message | measured |
 | Tests passed, completed, corrections, reviewer verdict | acceptance command and the outcome file | measured / judged |
+
+Collector notes (0.2.1):
+- **Subagents.** Child sessions are discovered recursively with `GET /api/session?parentID=<id>` (OpenCode 2.2.7 has no `/children` route). Retrieval errors abort the collection instead of silently omitting subagents.
+- **Unknown cost.** When the provider reports no cost on any step, `providerCostUSD` is `null` (unknown), not 0. The aggregator then reports totals and net savings as `null` until `billedProviderUSD` is supplied in the outcome file.
+- **Reconciliation.** `sessionTotals` holds OpenCode's session-level totals and their difference from the per-message sums. Small differences come from auxiliary requests without an assistant message (for example title generation); the per-message figures are the coding-loop usage.
 
 **Net savings = mean total(A) − mean total(B)**, where total = provider cost + Jev cost. Cache effects are already inside the provider cost, because cache writes and reads are billed there. A token reduction is not a saving by itself: pruning changes the request prefix and can add cache writes. Report savings only alongside the quality fields, and treat overlapping ranges or fewer than 3 runs per group as inconclusive.
 

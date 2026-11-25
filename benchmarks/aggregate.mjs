@@ -12,17 +12,18 @@ for (const f of process.argv.slice(2).filter((f) => !f.endsWith(".outcome.json")
   const o = existsSync(f.replace(/\.json$/, ".outcome.json")) ? JSON.parse(readFileSync(f.replace(/\.json$/, ".outcome.json"), "utf8")) : {}
   ;((runs[m[1]] ??= { A: [], B: [] })[m[2]]).push({ r, o })
 }
-const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN)
-const spread = (xs) => (xs.length ? [Math.min(...xs), Math.max(...xs)] : [NaN, NaN])
+// Unknown values (null) make the mean unknown rather than silently counting as 0.
+const mean = (xs) => (xs.length && xs.every((x) => typeof x === "number" && !Number.isNaN(x)) ? xs.reduce((a, b) => a + b, 0) / xs.length : null)
+const spread = (xs) => (xs.length && xs.every((x) => typeof x === "number") ? [Math.min(...xs), Math.max(...xs)] : null)
 const summary = (list) => {
   const pick = (fn) => list.map(fn)
   // Billed figures win when provided; otherwise the provider-reported (OpenCode) cost and the Jev estimate are used.
   const provider = pick(({ r, o }) => o.billedProviderUSD ?? r.measured.providerCostUSD)
   const jev = pick(({ r, o }) => o.billedJevUSD ?? r.jev?.costUSDEstimated ?? 0)
-  const total = provider.map((p, i) => p + jev[i])
+  const total = provider.map((p, i) => (p === null || p === undefined ? null : p + jev[i]))
   return {
     n: list.length,
-    providerUSD: { mean: mean(provider), range: spread(provider), source: list.some(({ o }) => o.billedProviderUSD != null) ? "billed (some runs)" : "OpenCode-reported" },
+    providerUSD: { mean: mean(provider), range: spread(provider), source: provider.some((p) => p === null || p === undefined) ? "unknown for some runs (provider reported no cost; add billedProviderUSD)" : list.some(({ o }) => o.billedProviderUSD != null) ? "billed (some runs)" : "OpenCode-reported" },
     jevUSD: { mean: mean(jev), range: spread(jev), source: list.some(({ o }) => o.billedJevUSD != null) ? "billed (some runs)" : "estimate" },
     totalUSD: { mean: mean(total), range: spread(total) },
     tokens: Object.fromEntries(["inputUncached", "cacheRead", "cacheWrite", "output", "reasoning", "peakContext"].map((k) => [k, Math.round(mean(pick(({ r }) => r.measured[k])))])),
@@ -43,8 +44,8 @@ for (const [task, g] of Object.entries(runs)) {
   const A = summary(g.A), B = summary(g.B)
   report[task] = {
     A, B,
-    netSavingsUSD: A.totalUSD.mean - B.totalUSD.mean,
-    netSavingsPct: A.totalUSD.mean > 0 ? Math.round((1 - B.totalUSD.mean / A.totalUSD.mean) * 1000) / 10 : null,
+    netSavingsUSD: A.totalUSD.mean !== null && B.totalUSD.mean !== null ? A.totalUSD.mean - B.totalUSD.mean : null,
+    netSavingsPct: A.totalUSD.mean > 0 && B.totalUSD.mean !== null ? Math.round((1 - B.totalUSD.mean / A.totalUSD.mean) * 1000) / 10 : null,
     caution: "Net savings include Jev cost and all cache effects (they are inside the provider cost). Compare quality fields before concluding. With fewer than 3 runs per group, or overlapping ranges, treat the result as inconclusive.",
   }
 }

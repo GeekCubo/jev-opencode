@@ -1,6 +1,6 @@
 // Client-neutral command and indicator logic shared by the TUI part (tui.tsx) and the Desktop GUI part (gui.tsx).
 // No OpenCode imports: each client adapts its own toast/dialog/session APIs to `UiHost`.
-import type { JevSnapshot } from "./rpc.ts"
+import { TRIGGER_LABEL, type JevSnapshot } from "./rpc.ts"
 
 export interface JevClient {
   status(input: { sessionID?: string }): Promise<{ text: string }>
@@ -114,5 +114,15 @@ export function sidebarRows(snap: JevSnapshot | undefined, now = Date.now()): Ar
     ["Today", `${usd(snap.todayUSDEstimated)} / ${limit(snap.perDayUSD)}`],
     ["Last run", ago(s?.lastEvaluationAt ?? null, now)],
   ]
+  const t = s?.trigger
+  if (t) {
+    const k = (n: number) => `${Math.round(n / 1000)}k`
+    rows.push(
+      ["Trigger", TRIGGER_LABEL[t.reason]],
+      ["Context", `${k(t.triggerContextTokens)} / ${k(t.thresholdTokens)}${t.providerContextTokens === null ? " (est.)" : ""}`],
+      ["Candidates", `${t.eligibleResults} eligible · ${t.protectedResults} pinned`],
+    )
+    if (t.reason === "evaluation_failed" && t.lastError) rows.push(["Last error", t.lastError.slice(0, 60)])
+  } else if (s) rows.push(["Trigger", "Not checked yet (next request)"])
   return rows
 }

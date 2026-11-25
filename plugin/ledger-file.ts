@@ -20,6 +20,8 @@ export interface SessionRecord {
   counters: Record<string, number>
   lastEvaluationAt?: number
   resets?: number
+  /** Latest trigger diagnostics (numbers, reason codes, sanitized error text only). */
+  trigger?: Record<string, unknown>
   /** Persistent per-session mode override; absent = inherit the global mode. */
   override?: "off" | "dry-run" | "active"
   /** Epoch ms of last update, for pruning old sessions. */

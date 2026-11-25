@@ -180,6 +180,19 @@ export function checkIntegrity(messages: readonly OcMessage[]): string | undefin
   return undefined
 }
 
+/**
+ * Counts completed tool results Jev could evaluate (eligible) vs. those pinned by recency or protection rules.
+ * Same rules as `prune`; local and cheap, no request.
+ */
+export function countCandidates(messages: readonly OcMessage[], preserveRecentMessages: number, protection: ProtectionOptions) {
+  const { messages: projected } = project(messages)
+  const isProtected = makeProtector(projected, protection)
+  let eligible = 0
+  let pinned = 0
+  for (const c of collectToolCalls(projected, preserveRecentMessages)) c.pinned || isProtected(c) ? pinned++ : eligible++
+  return { eligible, protected: pinned }
+}
+
 export interface PruneOutcome<M> {
   messages: M[]
   result: CompactResult

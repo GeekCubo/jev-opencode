@@ -38,6 +38,10 @@ Synthetic demo sessions with a mock coding model. TUI images are rendered from e
 |---|---|
 | ![TUI session override](docs/screenshots/tui-session-override.png) | ![Desktop session override](docs/screenshots/desktop-session-override.png) |
 
+| TUI trigger diagnostics (0.2.1) | Desktop trigger diagnostics (0.2.1) |
+|---|---|
+| ![TUI trigger diagnostics](docs/screenshots/tui-trigger-diagnostics.png) | ![Desktop trigger diagnostics](docs/screenshots/desktop-trigger-diagnostics.png) |
+
 ## Quick start
 
 Requirements:
@@ -132,7 +136,7 @@ All options go in `options` of the plugin entry. Invalid options disable the plu
 | `model` | `"jev-1.14"` | Jev model. Known prices: `jev-1.14`, `jev-1.13`. |
 | `approvedPricePerMTok` | none | Required to use a model with no known price, in USD per 1M input tokens. |
 | `maxPricePerMTok` | `1.5` | Price cap in USD per 1M tokens. The hard maximum is 1.5. |
-| `compactAtTokens` | `60000` | Absolute evaluation threshold, in estimated tokens. |
+| `compactAtTokens` | `60000` | Absolute evaluation threshold, in context tokens. From 0.2.1 this is the provider-reported context of the previous step plus estimated growth; before the first report, a message-based estimate (see [docs/TRIGGER.md](docs/TRIGGER.md)). |
 | `compactAtContextFraction` | `0.6` | Relative threshold. The effective threshold is `min(compactAtTokens, fraction × context window)`. |
 | `keepThreshold` | `0.5` | Minimum Jev keep probability (0–1). |
 | `minReductionRatio` | `0.15` | Minimum reduction needed to apply decisions; otherwise native compaction stays in charge. |
@@ -271,7 +275,7 @@ Jev is an external service, and this plugin is not local or offline while active
 | `/jev-…` commands missing | Run `/reload` in the TUI, or reopen the Desktop window. Check that the plugin entry is in the **global** config, uses an absolute path, and that `/jev-status` works. |
 | No status indicator | Same as above. Indicators need TUI slots or the Desktop GUI part. If they're missing, commands still work. |
 | Desktop shows no Jev indicator or commands, but the TUI does | The Desktop app loads GUI parts only from the **global** config, through its own background service. In isolated testing on 2.2.7, a GUI part added while that service was already running wasn't picked up until the service restarted (`opencode service restart`, which interrupts running sessions). |
-| No evaluations | Context is below `min(compactAtTokens, 0.6 × window)`, or it hasn't grown by `minGrowthTokens`, or the cooldown is active, or the mode is `off`. Use `/jev-compact` to force one. |
+| No evaluations | Check the `trigger:` line in `/jev-status` (or the sidebar/pill): it names the reason, e.g. waiting for threshold or growth, cooldown, no eligible tool results, budget, or authentication. Use `/jev-compact` to force one. |
 | "Unavailable" status | Unknown or over-cap model price, missing hook, or no API key. Check `/jev-status` and the OpenCode log for `[jev]` lines. |
 | Invalid key or unknown model | Look for `[jev] … Jev HTTP 401/403/400` in the log. Fix the key file or the model name. |
 | "Budget reached" | Wait for the next UTC day, raise `budget.*`, or set it to `null` (unlimited). |
@@ -299,11 +303,17 @@ These are preliminary results under controlled conditions. They are **not** bill
   - Estimated tokens: 20,342 → 8,401 (11,941 removed, about 58.7%).
   - Characters: the same run measured 76,795 → 32,382 characters (57.8%). The two methods measure different things and shouldn't be mixed.
 - **Latency.** TypeSafe latency in that live test was a median of 341 ms (min 286, max 620) over 3 full-evaluation requests. Separately, a small sanity request took 630 ms. The sample is tiny.
-- **Tests.** 95 automated tests pass; 6 are skipped by default (5 opt-in live tests and 1 upstream HTTP-client test).
+- **Tests.** 109 automated tests pass; 7 are skipped by default (5 opt-in live tests, 1 upstream HTTP-client test and 1 opt-in local session replay).
 
 ### Real-world coding benchmark: pending
 
-No A/B comparison on real coding tasks has been completed, so there is no evidence yet about real bill reduction, cache effects or coding quality. The protocol is in [benchmarks/README.md](benchmarks/README.md).
+No A/B comparison on real coding tasks has been completed, so there is no evidence yet about real bill reduction, cache effects or coding quality. A single-task pilot on 0.2.0 recorded zero Jev evaluations because of the trigger defect fixed in 0.2.1; it says nothing about savings.
+
+### Known limitations (0.2.1)
+
+- **Real-world cost savings are unmeasured.** Estimated context reduction is not a saving: pruning changes the request prefix and can add cache writes, and Jev has its own cost.
+- **Negative reduction statistics are unresolved.** Some sessions have shown negative estimated reduction figures in the statistics. The cause has not been investigated; treat the reduction and "tokens removed" figures as indicative only.
+- **Trigger lag.** The provider-reported context lags one step, and a session's first request uses the message estimate, so an evaluation can start one step later than the threshold would suggest. The protocol is in [benchmarks/README.md](benchmarks/README.md).
 
 ## Credits and license
 

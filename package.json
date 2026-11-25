@@ -1,6 +1,6 @@
 {
   "name": "jev-opencode",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Jev Compaction for OpenCode: automatic context optimization using TypeSafe Jev.",
   "license": "MIT",
