@@ -163,7 +163,7 @@ All options go in `options` of the plugin entry. Invalid options disable the plu
 | `/jev-enable` | Active mode for all sessions | no |
 | `/jev-dry-run` | Dry-run mode for all sessions | no |
 | `/jev-disable` | Turn Jev off for all sessions | no |
-| `/jev-status` | Show mode, thresholds and budget (dialog) | no (more detail in a session) |
+| `/jev-status` | Show plugin version, mode, trigger diagnostics, thresholds and budget (dialog) | no (more detail in a session) |
 | `/jev-stats` | Show statistics (dialog) | no (session section only in a session) |
 | `/jev-reset` | Restore the full context of the current session | yes |
 | `/jev-compact` | Evaluate the current session on its next request, ignoring threshold and cooldown but not the budget | yes |
@@ -303,7 +303,7 @@ These are preliminary results under controlled conditions. They are **not** bill
   - Estimated tokens: 20,342 → 8,401 (11,941 removed, about 58.7%).
   - Characters: the same run measured 76,795 → 32,382 characters (57.8%). The two methods measure different things and shouldn't be mixed.
 - **Latency.** TypeSafe latency in that live test was a median of 341 ms (min 286, max 620) over 3 full-evaluation requests. Separately, a small sanity request took 630 ms. The sample is tiny.
-- **Tests.** 109 automated tests pass; 7 are skipped by default (5 opt-in live tests, 1 upstream HTTP-client test and 1 opt-in local session replay).
+- **Tests.** 110 automated tests pass; 7 are skipped by default (5 opt-in live tests, 1 upstream HTTP-client test and 1 opt-in local session replay).
 
 ### Real-world coding benchmark: pending
 

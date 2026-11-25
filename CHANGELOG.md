@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2 (2026-11-25), development release
+
+- The plugin version is shown in `/jev-status`, `/jev-stats`, the TUI sidebar, the Desktop pill (Version row), the snapshot (`version`) and the CLI. It is read from the plugin's own `package.json`.
+
 ## 0.2.1 (2026-11-25), development release
 
 - Fixed: evaluations could never trigger in real sessions. The trigger compared a message-only character estimate (which excludes the system prompt, instructions and tool definitions, and undercounts code) with the threshold; in a real session the estimate stayed near 58% of the provider-reported context. The trigger now uses the provider-reported context of the previous step (uncached + cached input) plus estimated growth, falling back to the estimate until the first report. Thresholds and defaults are unchanged. See `docs/TRIGGER.md`.

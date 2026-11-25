@@ -251,3 +251,17 @@ describe("evaluation trigger", () => {
     expect(jev.calls).toHaveLength(0)
   })
 })
+
+describe("version reporting", () => {
+  it("shows the plugin's package.json version in /jev-status, /jev-stats, the snapshot and the sidebar", async () => {
+    const { readFileSync } = await import("node:fs")
+    const { sidebarRows } = await import("../plugin/ui-core.ts")
+    const version = JSON.parse(readFileSync(new URL("../plugin/package.json", import.meta.url), "utf8")).version
+    const { f } = await setup()
+    const snap: any = await f.rpc.snapshot({ sessionID: "s" })
+    expect(snap.version).toBe(version)
+    expect((await f.rpc.status({ sessionID: "s" })).text).toContain(`Jev Compaction for OpenCode ${version}`)
+    expect((await f.rpc.stats({ sessionID: "s" })).text).toContain(`Jev Compaction for OpenCode ${version}`)
+    expect(sidebarRows(snap)).toContainEqual(["Version", version])
+  })
+})

@@ -17,7 +17,7 @@ import { countCandidates, prune, type OcMessage, type OcPart } from "./compactio
 import { add, emptyCounters, formatStats, type Counters } from "./statistics.ts"
 import { FileLedger, reservedFor, session as session$ } from "./ledger-file.ts"
 import { JevRpc, TRIGGER_LABEL, type JevSnapshot, type TriggerDiagnostics, type TriggerReason } from "./rpc.ts"
-import { errorMessage, estimateTokens, hash, ledgerPath, statsSnapshotPath } from "./util.ts"
+import { errorMessage, estimateTokens, hash, ledgerPath, PLUGIN_VERSION, statsSnapshotPath } from "./util.ts"
 import { mkdir, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 
@@ -282,6 +282,7 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
           await mkdir(dirname(snapshotPath), { recursive: true, mode: 0o700 })
           const data = {
             updatedAt: new Date(now()).toISOString(),
+            version: PLUGIN_VERSION,
             mode,
             endpoint: config.endpoint,
             model: config.model,
@@ -739,6 +740,7 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
         const day$ = sessionID ? today : d.days[day()] ?? 0
         const eff = sessionID ? modeFor(sessionID) : effectiveMode()
         return [
+          `Jev Compaction for OpenCode ${PLUGIN_VERSION}`,
           `global mode=${mode} (default for all sessions on this OpenCode server; persisted)`,
           sessionID ? `this session (${sessionID}): ${eff} (${modeSource(sessionID)})` : "no session selected",
           `endpoint=${config.endpoint}, model=${config.model} ($${price}/Mtok input)${priceError ? `; BLOCKED: ${priceError}` : ""}`,
@@ -768,6 +770,7 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
           mode: eff,
           globalMode: mode,
           modeSource: modeSource(sessionID),
+          version: PLUGIN_VERSION,
           reason: unavailableReason ?? priceError ?? (config.mode === "off" ? "disabled in config" : null) ?? (overDay ? "daily budget reached" : overSession ? "session budget reached" : null),
           endpoint: config.endpoint,
           model: config.model,
@@ -822,7 +825,7 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
           const head = v
             ? `This session: mode ${modeFor(sessionID!)} (${modeSource(sessionID)}); last successful evaluation ${v.rec?.lastEvaluationAt ? new Date(v.rec.lastEvaluationAt).toISOString() : "never"}; resets ${v.counters.resets}\n${triggerLines(sessionID!, v.rec?.trigger).join("\n")}\n${formatStats("This session (persisted)", v.counters)}\n`
             : ""
-          return head + formatStats("All sessions (persisted)", { ...emptyCounters(), ...d.counters }) + `\n  Today (UTC ${day()}): $${(d.days[day()] ?? 0).toFixed(5)} / ${formatLimit(config.budget.perDayUSD)} (est.)`
+          return `Jev Compaction for OpenCode ${PLUGIN_VERSION}\n` + head + formatStats("All sessions (persisted)", { ...emptyCounters(), ...d.counters }) + `\n  Today (UTC ${day()}): $${(d.days[day()] ?? 0).toFixed(5)} / ${formatLimit(config.budget.perDayUSD)} (est.)`
         },
         setMode: async (next: Mode) => {
           if (next !== "off" && unavailableReason) return `Not changed: Jev is unavailable (${unavailableReason}).`

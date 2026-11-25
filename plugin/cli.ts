@@ -13,7 +13,7 @@ try {
   console.log(`No Jev statistics yet (${path}).`)
   process.exit(0)
 }
-console.log(`Jev compaction — mode=${data.mode} endpoint=${data.endpoint} model=${data.model} ($${data.pricePerMTok}/Mtok input), updated ${data.updatedAt}`)
+console.log(`Jev compaction ${data.version ?? "(version unknown)"} — mode=${data.mode} endpoint=${data.endpoint} model=${data.model} ($${data.pricePerMTok}/Mtok input), updated ${data.updatedAt}`)
 const lim = (n: number | null) => (n === null ? "Unlimited" : `$${n}`)
 console.log(`Budget: today $${Number(data.spentTodayUSD).toFixed(5)} of ${lim(data.budget.perDayUSD)}/day, ${lim(data.budget.perSessionUSD)}/session`)
 const id = process.argv[2]

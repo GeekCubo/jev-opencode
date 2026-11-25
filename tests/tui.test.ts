@@ -59,7 +59,7 @@ describe("shared command layer (TUI and Desktop GUI)", () => {
 
 describe("status indicator formatting", () => {
   const snap = (over: Partial<JevSnapshot> = {}): JevSnapshot => ({
-    state: "active", mode: "active", globalMode: "active", modeSource: "inherited from global", reason: null, endpoint: "typesafe", model: "jev-1.14", todayUSDEstimated: 0.0157, perDayUSD: 1, perSessionUSD: 0.25,
+    state: "active", mode: "active", globalMode: "active", modeSource: "inherited from global", version: "0.2.2", reason: null, endpoint: "typesafe", model: "jev-1.14", todayUSDEstimated: 0.0157, perDayUSD: 1, perSessionUSD: 0.25,
     session: { evaluations: 3, applied: 3, dryRuns: 0, failures: 0, requestsPruned: 4, tokensRemovedFromRequestsEstimated: 90000, nativeCompactions: 0, resets: 0, attempts: 3, trigger: null, tokensRemovedEstimated: 41234, reductionPctEstimated: 57.1, jevTokensMeasured: 9000, costUSDEstimated: 0.0004, pruned: { dropped: 9, truncated: 1 }, lastEvaluationAt: new Date(Date.now() - 90_000).toISOString(), evaluating: false },
     ...over,
   })

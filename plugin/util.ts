@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -70,6 +71,15 @@ export function configDir(env: NodeJS.ProcessEnv = process.env): string {
 export function statsSnapshotPath(env: NodeJS.ProcessEnv = process.env): string {
   return env.JEV_STATS_FILE || join(env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "opencode-jev", "stats.json")
 }
+
+/** This plugin's version, from its own package.json ("unknown" if unreadable). */
+export const PLUGIN_VERSION: string = (() => {
+  try {
+    return String(JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version ?? "unknown")
+  } catch {
+    return "unknown"
+  }
+})()
 
 /** Shared accounting file (honours XDG_STATE_HOME); override with JEV_LEDGER_FILE. */
 export function ledgerPath(env: NodeJS.ProcessEnv = process.env): string {

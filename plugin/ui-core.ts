@@ -107,6 +107,7 @@ export function sidebarRows(snap: JevSnapshot | undefined, now = Date.now()): Ar
   const rows: Array<[string, string]> = [
     ["Status", STATE_LABEL[snap.state] + (source ? ` · ${source}` : "") + (snap.reason && snap.state !== "off" ? ` (${snap.reason})` : "")],
     ["Model", snap.model],
+    ["Version", snap.version ?? "unknown"],
     ["Evaluations", String(s?.evaluations ?? 0)],
     ["Tokens removed", `~${(s?.tokensRemovedEstimated ?? 0).toLocaleString("en-US")} (est.)`],
     ["Reduction", `~${s?.reductionPctEstimated ?? 0}% (est.)`],

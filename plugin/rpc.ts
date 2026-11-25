@@ -107,6 +107,8 @@ export interface JevSnapshot {
   mode: "off" | "dry-run" | "active"
   globalMode: "off" | "dry-run" | "active"
   modeSource: "inherited from global" | "session override" | "config kill switch" | "unavailable"
+  /** Plugin version serving this snapshot. */
+  version: string
   reason: string | null
   endpoint: string
   model: string
