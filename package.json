@@ -1,0 +1,27 @@
+{
+  "name": "jev-opencode",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Jev Compaction for OpenCode: automatic context optimization using TypeSafe Jev.",
+  "license": "MIT",
+  "type": "module",
+  "homepage": "https://github.com/GeekCubo/jev-opencode",
+  "engines": { "node": ">=22.6" },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:live": "LIVE_JEV=1 vitest run tests/live.test.ts",
+    "build:gui": "vite build -c vite.gui.config.ts"
+  },
+  "devDependencies": {
+    "@opencode/plugin": "2.2.7",
+    "@opentui/core": "0.8.1",
+    "@opentui/solid": "0.8.1",
+    "@types/node": "^22.10.2",
+    "solid-js": "1.9.17",
+    "typescript": "^5.7.2",
+    "vite": "7.3.8",
+    "vite-plugin-solid": "2.11.10",
+    "vitest": "^3.2.4"
+  }
+}

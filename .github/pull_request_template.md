@@ -1,0 +1,5 @@
+- [ ] `npm run typecheck` and `npm test` pass
+- [ ] Focused test added for behaviour changes
+- [ ] `npm run build:gui` run and bundle committed if `gui.tsx`/`ui-core.ts`/`rpc.ts` changed
+- [ ] No keys, transcripts, statistics or personal configuration included
+- [ ] `plugin/upstream/NOTICE.md` updated if upstream files changed

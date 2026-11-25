@@ -1,0 +1,17 @@
+node_modules
+coverage/
+*.log
+.env
+.env.*
+*api-key*
+*.key
+*.pem
+auth*.json
+stats.json
+reports/
+backups/
+*.db
+*.db-*
+.DS_Store
+!plugin/dist/
+!plugin/dist/gui-experimental.cjs
