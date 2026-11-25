@@ -11,12 +11,13 @@
  * - event.subscribe            measured token/cost/cache usage and native compaction observations.
  */
 import type { Plugin } from "@opencode/plugin"
-import { ConfigError, endpointUrl, wireModel, priceFor, resolveConfig, thresholdFor, type JevConfig, type Mode } from "./config.ts"
+import { ConfigError, endpointUrl, exceeds, formatLimit, reached, wireModel, priceFor, resolveConfig, thresholdFor, type JevConfig, type Mode } from "./config.ts"
 import { createJevClient, resolveApiKey } from "./jev.ts"
 import { prune, type OcMessage, type OcPart } from "./compaction.ts"
-import { add, emptyCounters, formatStats, Ledger, type Counters } from "./statistics.ts"
+import { add, emptyCounters, formatStats, type Counters } from "./statistics.ts"
+import { FileLedger, reservedFor, session as session$ } from "./ledger-file.ts"
 import { JevRpc, type JevSnapshot } from "./rpc.ts"
-import { errorMessage, estimateTokens, hash, statsSnapshotPath } from "./util.ts"
+import { errorMessage, estimateTokens, hash, ledgerPath, statsSnapshotPath } from "./util.ts"
 import { mkdir, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 
@@ -31,6 +32,7 @@ interface Decisions {
 }
 
 interface SessionState {
+  id: string
   decisions?: Decisions
   /** Estimated context tokens when Jev last ran. */
   lastRunTokens: number
@@ -54,6 +56,8 @@ export interface Deps {
   readFile?: (path: string) => Promise<string>
   configDir?: string
   snapshotPath?: string
+  /** Shared accounting file (default: $XDG_STATE_HOME/opencode-jev/ledger.json). */
+  ledgerPath?: string
 }
 
 const charsOf = (messages: readonly OcMessage[]) => {
@@ -176,25 +180,82 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
       // A mode chosen by command persists, except that an explicit "off" in config always wins (kill switch).
       let mode: Mode = config.mode === "off" ? "off" : stored && ["off", "dry-run", "active"].includes(stored) ? stored : config.mode
       let unavailableReason: string | undefined
-      // Shared, read-modify-write accounting: several instances (one per project location) share this storage.
-      const ledger = new Ledger(ctx.storage as any)
+      // Shared accounting: one locked file for every plugin instance of this user (all projects, all processes).
+      // Numbers only. Spend, reservations, per-session statistics and per-session mode overrides.
+      const ledger = new FileLedger({ path: deps.ledgerPath ?? ledgerPath({ ...process.env, ...(deps.env ?? {}) }), now })
       const day = () => new Date(now()).toISOString().slice(0, 10)
-      const dayKey = () => Ledger.dayKey(day())
-      await ledger.total(dayKey())
+      // One-time migration of the previous storage-based totals (never overwrites existing file values).
+      try {
+        const oldDay = Number(await ctx.storage.get(`spend/${day()}`).catch(() => 0)) || 0
+        const oldStats = (await ctx.storage.get("stats").catch(() => undefined)) as Record<string, number> | undefined
+        ledger.update((d) => {
+          if (d.days[day()] === undefined && oldDay > 0) d.days[day()] = oldDay
+          if (!Object.keys(d.counters).length && oldStats) d.counters = { ...oldStats }
+        })
+      } catch (e) {
+        log("warn", `accounting file unavailable (${errorMessage(e)})`)
+      }
       const sessions = new Map<string, SessionState>()
+      // Per-session overrides (persisted in the accounting file). Config "off" is a kill switch above everything.
+      const overrides = new Map<string, Mode>()
+      /** Sessions whose requests this instance has handled (one instance per project location). */
+      const ownedHere = new Set<string>()
+      const loadOverrides = () => {
+        try {
+          const d = ledger.read()
+          overrides.clear()
+          for (const [id, r] of Object.entries(d.sessions)) if (r.override) overrides.set(id, r.override)
+        } catch {}
+      }
+      loadOverrides()
+      const effectiveMode = (override?: Mode): Mode => (config.mode === "off" || unavailableReason ? "off" : override ?? mode)
+      const modeFor = (sessionID: string): Mode => effectiveMode(overrides.get(sessionID))
       let emitChanged: (sessionID?: string) => void = () => {}
       const session = (id: string): SessionState => {
         let s = sessions.get(id)
-        if (!s) sessions.set(id, (s = { lastRunTokens: 0, lastRunAt: 0, force: false, spentUSD: 0, counters: emptyCounters(), pruneChangedAt: 0, awaitingCacheObservation: false }))
+        if (!s) sessions.set(id, (s = { id, lastRunTokens: 0, lastRunAt: 0, force: false, spentUSD: 0, counters: emptyCounters(), pruneChangedAt: 0, awaitingCacheObservation: false }))
         return s
       }
-      const bump = (s: SessionState, delta: Partial<Counters>) => (add(s.counters, delta), ledger.addCounters(delta))
+      const pending = new Map<string, Partial<Counters>>()
+      const bump = (s: SessionState, delta: Partial<Counters>) => {
+        add(s.counters, delta)
+        const p = pending.get(s.id) ?? {}
+        for (const [k, v] of Object.entries(delta)) (p as any)[k] = ((p as any)[k] ?? 0) + (v as number)
+        pending.set(s.id, p)
+      }
+      const flushCounters = () => {
+        if (!pending.size) return
+        const batch = [...pending]
+        pending.clear()
+        try {
+          ledger.update((d) => {
+            for (const [id, delta] of batch) {
+              const rec = session$(d, id, now())
+              for (const [k, v] of Object.entries(delta)) {
+                rec.counters[k] = (rec.counters[k] ?? 0) + (v as number)
+                d.counters[k] = (d.counters[k] ?? 0) + (v as number)
+              }
+              const st = sessions.get(id)
+              if (st?.lastEvaluationAt) rec.lastEvaluationAt = Math.max(rec.lastEvaluationAt ?? 0, st.lastEvaluationAt)
+              rec.updatedAt = now()
+            }
+          })
+        } catch (e) {
+          for (const [id, delta] of batch) {
+            const p = pending.get(id) ?? {}
+            for (const [k, v] of Object.entries(delta)) (p as any)[k] = ((p as any)[k] ?? 0) + (v as number)
+            pending.set(id, p)
+          }
+          log("warn", `accounting write failed (${errorMessage(e)}); will retry`)
+        }
+      }
       let persistTimer: ReturnType<typeof setTimeout> | undefined
       const persist = () => {
         persistTimer ??= setTimeout(() => {
           persistTimer = undefined
-          void ledger.flush().then(writeSnapshot)
-        }, 2_000)
+          flushCounters()
+          void writeSnapshot()
+        }, 1_000)
       }
       // Status snapshot for `jev-stats` CLI (no transcript content, no credentials).
       const snapshotPath = deps.snapshotPath ?? statsSnapshotPath(deps.env ?? process.env)
@@ -208,9 +269,26 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
             model: config.model,
             pricePerMTok: price,
             budget: config.budget,
-            spentTodayUSD: ledger.cachedTotal(dayKey()),
-            global: await ledger.counters(),
-            sessions: Object.fromEntries([...sessions].map(([id, st]) => [id, { mode, spentUSD: st.spentUSD, pruned: st.decisions ? { dropped: st.decisions.drop.size, truncated: st.decisions.truncate.size } : null, counters: st.counters }])),
+            ...(() => {
+              // Same source as the TUI/Desktop indicators and /jev-stats: the shared accounting file.
+              const d = ledger.read()
+              return {
+                spentTodayUSD: d.days[day()] ?? 0,
+                global: d.counters,
+                sessions: Object.fromEntries(
+                  Object.entries(d.sessions).map(([id, r]) => {
+                    const st = sessions.get(id)
+                    return [id, {
+                      mode: effectiveMode(r.override), override: r.override ?? null, spentUSD: r.spentUSD,
+                      lastEvaluationAt: r.lastEvaluationAt ? new Date(r.lastEvaluationAt).toISOString() : null,
+                      resets: r.resets ?? 0,
+                      pruned: st?.decisions ? { dropped: st.decisions.drop.size, truncated: st.decisions.truncate.size } : null,
+                      counters: r.counters,
+                    }]
+                  }),
+                ),
+              }
+            })(),
           }
           await writeFile(snapshotPath, JSON.stringify(data, null, 2), { mode: 0o600 })
         } catch {}
@@ -245,20 +323,16 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
           },
         }))
 
-      // In-flight cost reservations (estimates), per instance.
-      const reserved = { day: 0, session: new Map<SessionState, number>() }
-      const sessionReserved = (s: SessionState) => reserved.session.get(s) ?? 0
       let globalInflight = 0
+      let reservationSeq = 0
       const MAX_GLOBAL_CONCURRENCY = 2
 
-      const runJev = async (sessionID: string, s: SessionState, messages: readonly OcMessage[], tokens: number, primaryInput?: number) => {
+      const runJev = async (sessionID: string, s: SessionState, messages: readonly OcMessage[], tokens: number, sessionMode: Mode) => {
         if (priceError) throw new ConfigError(priceError)
         const key = await getKey()
         if (!key) throw new ConfigError(`no API key for ${config.endpoint}`)
-        // Budget totals include spend by other instances and before any reload.
-        let daySpent = await ledger.total(dayKey())
-        s.spentUSD = Math.max(s.spentUSD, await ledger.total(Ledger.sessionKey(sessionID)))
         const started = now()
+        const reservations: string[] = []
         const client = createJevClient(
           {
             url: endpointUrl(config),
@@ -267,25 +341,37 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
             timeoutMs: config.timeoutMs,
             maxRetries: config.maxRetries,
             fetch: deps.fetch,
-            // Parallel batches of one evaluation (and concurrent sessions) reserve their estimated cost up front,
-            // so together they cannot overshoot the budget; the reservation is released when the attempt ends.
+            // Every request atomically reserves its estimated cost in the shared accounting file before it starts,
+            // so parallel batches, concurrent sessions and other projects cannot overshoot a limit together.
+            // The reservation is released when the attempt ends; abandoned ones expire (crash recovery).
             beforeRequest: (est) => {
               const cost = (est * price) / 1e6
-              if (s.spentUSD + sessionReserved(s) + cost > config.budget.perSessionUSD || daySpent + reserved.day + cost > config.budget.perDayUSD)
-                throw new BudgetError("Jev budget exhausted")
-              reserved.day += cost
-              reserved.session.set(s, sessionReserved(s) + cost)
+              const id = `${process.pid}-${started}-${++reservationSeq}`
+              ledger.update((d) => {
+                const today = day()
+                const daySpent = (d.days[today] ?? 0) + reservedFor(d, (r) => r.day === today)
+                const rec = session$(d, sessionID, now())
+                const sessionSpent = rec.spentUSD + reservedFor(d, (r) => r.sessionID === sessionID)
+                if (exceeds(config.budget.perDayUSD, daySpent, cost) || exceeds(config.budget.perSessionUSD, sessionSpent, cost))
+                  throw new BudgetError("Jev budget exhausted")
+                d.reservations[id] = { usd: cost, day: today, sessionID, pid: process.pid, at: now() }
+              })
+              reservations.push(id)
             },
-            afterRequest: (est) => {
-              const cost = (est * price) / 1e6
-              reserved.day = Math.max(0, reserved.day - cost)
-              reserved.session.set(s, Math.max(0, sessionReserved(s) - cost))
+            afterRequest: () => {
+              const id = reservations.shift()
+              if (id) ledger.update((d) => void delete d.reservations[id])
             },
             onUsage: ({ inputTokens, measured }) => {
               const cost = (inputTokens * price) / 1e6
-              s.spentUSD += cost
-              daySpent += cost
-              ledger.addSpend([dayKey(), Ledger.sessionKey(sessionID)], cost)
+              // Spend is recorded atomically, once per successful response (never duplicated by retries).
+              ledger.update((d) => {
+                d.days[day()] = (d.days[day()] ?? 0) + cost
+                const rec = session$(d, sessionID, now())
+                rec.spentUSD += cost
+                rec.updatedAt = now()
+                s.spentUSD = rec.spentUSD
+              })
               bump(s, { jevRequests: 1, jevCostUSD: cost, ...(measured ? { jevInputTokensMeasured: inputTokens } : { jevInputTokensEstimated: inputTokens }) })
             },
           },
@@ -313,13 +399,14 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
             contextTokensAfter: after,
             rateLimited: client.usage.rateLimited,
           })
+          s.lastEvaluationAt = now()
           if (config.logDecisions)
             log("info", `session ${sessionID}: ${out.result.decisions.filter((d) => d.reason !== "pinned").map((d) => `${d.id}:${d.tool}:${d.action}`).join(" ")}`)
           const evaluated = new Set(s.decisions?.evaluated ?? [])
           const askedIds = new Set(out.result.decisions.filter((d) => d.reason !== "pinned").map((d) => d.id))
           for (const c of out.calls) if (askedIds.has(c.id)) evaluated.add(c.tool_use_id)
           const sufficient = out.ratio >= config.minReductionRatio
-          if (mode === "dry-run") {
+          if (sessionMode === "dry-run") {
             // Record what was evaluated so dry-run never pays twice for the same calls; nothing is applied.
             s.decisions = { drop: new Set(), truncate: new Map(), evaluated }
             bump(s, { dryRuns: 1, ...(sufficient ? {} : { skippedInsufficient: 1 }) })
@@ -355,7 +442,6 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
           s.pruneChangedAt = now()
           s.awaitingCacheObservation = true
           bump(s, { appliedRuns: 1 })
-          void primaryInput
         } catch (e) {
           if (e instanceof BudgetError) (bump(s, { budgetBlocked: 1 }), (s.budgetBlocked = true))
           else bump(s, { failures: 1, rateLimited: client.usage.rateLimited, ...(config.nativeFallback ? { nativeFallbacks: 1 } : {}) })
@@ -363,7 +449,6 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
         } finally {
           s.lastRunTokens = tokens
           s.lastRunAt = now()
-          s.lastEvaluationAt = now()
           persist()
           emitChanged(sessionID)
         }
@@ -372,10 +457,12 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
       const onContext = async (event: { sessionID: string; model: { providerID: string; id: string }; messages: OcMessage[] }) => {
         // Plugin status messages are shown to the user but never sent to any model.
         if (event.messages.some(isStatusMessage)) event.messages = event.messages.filter((m) => !isStatusMessage(m))
-        if (mode === "off") return
+        ownedHere.add(event.sessionID)
+        const sessionMode = modeFor(event.sessionID)
+        if (sessionMode === "off") return
         const s = session(event.sessionID)
         // Thresholds and Jev state are based on what is actually sent (cached decisions applied).
-        const current = mode === "active" && s.decisions ? applyCached(event.messages, s.decisions).messages : event.messages
+        const current = sessionMode === "active" && s.decisions ? applyCached(event.messages, s.decisions).messages : event.messages
         const tokens = estimateContextTokens(current)
         const info = await modelInfo(event.model)
         const threshold = thresholdFor(config, info.context)
@@ -391,13 +478,13 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
           s.lastFingerprint = fingerprint
           globalInflight++
           emitChanged(event.sessionID)
-          s.inflight = runJev(event.sessionID, s, current, tokens, info.input).finally(() => {
+          s.inflight = runJev(event.sessionID, s, current, tokens, sessionMode).finally(() => {
             globalInflight--
             s.inflight = undefined
           })
           await s.inflight
         }
-        if (mode !== "active" || !s.decisions) return
+        if (sessionMode !== "active" || !s.decisions) return
         const before = estimateContextTokens(event.messages)
         const applied = applyCached(event.messages, s.decisions)
         if (!applied.changed) return
@@ -426,7 +513,8 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
       await optional("compaction hook", () => ctx.session.hook("compaction", (async (event: { sessionID: string; messages: OcMessage[] }) => {
         if (event.messages.some(isStatusMessage)) event.messages = event.messages.filter((m) => !isStatusMessage(m))
         const s = sessions.get(event.sessionID)
-        if (mode !== "active" || !s?.decisions) return
+        ownedHere.add(event.sessionID)
+        if (modeFor(event.sessionID) !== "active" || !s?.decisions) return
         event.messages = applyCached(event.messages, s.decisions).messages
       }) as any))
       await optional("generate hook", () => ctx.session.hook("generate", ((event: { messages: OcMessage[] }) => {
@@ -468,8 +556,11 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
           for await (const ev of ctx.event.subscribe({ types: ["session.step.ended", "session.compaction.ended"], signal: controller.signal }) as AsyncIterable<any>) {
             const s = sessions.get(ev.data?.sessionID)
             if (ev.type === "session.compaction.ended") {
-              if (s) (bump(s, { nativeCompactions: 1 }), (s.lastRunTokens = 0), (s.decisions = undefined))
-              else ledger.addCounters({ nativeCompactions: 1 })
+              // Counted by the instance serving this session; if this instance has not seen a request for it yet
+              // (e.g. right after a reload), count it only when it is the session's known owner in the ledger.
+              const id = ev.data?.sessionID
+              if (s) (bump(s, { nativeCompactions: 1 }), (s.lastRunTokens = 0), (s.decisions = undefined), persist())
+              else if (id && ownedHere.has(id)) (bump(session(id), { nativeCompactions: 1 }), persist())
               continue
             }
             const t = ev.data?.tokens
@@ -490,66 +581,121 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
         emitChanged()
       }
       const noSession = "No session yet: open or start a session first (this command acts on the current session)."
+
+      /** Persisted per-session view: one consistent source for indicators, /jev-stats, /jev-status and the CLI. */
+      const sessionView = (sessionID: string) => {
+        flushCounters()
+        const d = ledger.read()
+        const today = d.days[day()] ?? 0
+        const rec = d.sessions[sessionID]
+        const st = sessions.get(sessionID)
+        const counters: Counters = { ...emptyCounters(), ...(rec?.counters ?? {}) }
+        return { d, today, rec, st, counters }
+      }
+      const modeSource = (sessionID?: string) =>
+        config.mode === "off" ? "config kill switch" : unavailableReason ? "unavailable" : sessionID && overrides.has(sessionID) ? "session override" : "inherited from global"
+
       const statusText = async (sessionID?: string) => {
-        const s = sessionID ? sessions.get(sessionID) : undefined
-        const daySpent = await ledger.total(dayKey())
-        const sessionSpent = sessionID ? Math.max(s?.spentUSD ?? 0, await ledger.total(Ledger.sessionKey(sessionID))) : 0
+        const { d, today, rec, st } = sessionID ? sessionView(sessionID) : { d: ledger.read(), today: 0, rec: undefined, st: undefined }
+        const day$ = sessionID ? today : d.days[day()] ?? 0
+        const eff = sessionID ? modeFor(sessionID) : effectiveMode()
         return [
-          `mode=${mode} (applies to all sessions on this OpenCode server; persisted)`,
+          `global mode=${mode} (default for all sessions on this OpenCode server; persisted)`,
+          sessionID ? `this session (${sessionID}): ${eff} (${modeSource(sessionID)})` : "no session selected",
           `endpoint=${config.endpoint}, model=${config.model} ($${price}/Mtok input)${priceError ? `; BLOCKED: ${priceError}` : ""}`,
           `threshold=min(${config.compactAtTokens}, ${config.compactAtContextFraction}×window) tokens, keepThreshold=${config.keepThreshold}, minReduction=${config.minReductionRatio}`,
-          `budget: ${sessionID ? `session $${sessionSpent.toFixed(5)}/${config.budget.perSessionUSD}, ` : ""}today $${daySpent.toFixed(5)}/${config.budget.perDayUSD}`,
+          `spend (est.): ${sessionID ? `session $${(rec?.spentUSD ?? 0).toFixed(5)} / ${formatLimit(config.budget.perSessionUSD)}, ` : ""}today $${day$.toFixed(5)} / ${formatLimit(config.budget.perDayUSD)}`,
           sessionID
-            ? `this session: ${s?.decisions && (s.decisions.drop.size || s.decisions.truncate.size) ? `${s.decisions.drop.size} dropped, ${s.decisions.truncate.size} truncated` : "no active pruning"}; last run at ~${s?.lastRunTokens ?? 0} tokens`
-            : "no session selected",
+            ? `pruning applied now: ${st?.decisions && (st.decisions.drop.size || st.decisions.truncate.size) ? `${st.decisions.drop.size} dropped, ${st.decisions.truncate.size} truncated` : "none"} (decisions are in memory; history below is persisted)`
+            : "",
           `native compaction: ${fallbackRef ? `summaries use ${fallback} (compaction agent only)` : "unchanged (OpenCode default)"}`,
-        ].join("\n")
+        ].filter(Boolean).join("\n")
       }
 
-      /** Structured state for status indicators (TUI sidebar/footer, Desktop pill). In-memory only. */
+      /** Structured state for status indicators (TUI sidebar/footer, Desktop pill). Local reads only. */
       const snapshot = async (sessionID?: string): Promise<JevSnapshot> => {
-        const s = sessionID ? sessions.get(sessionID) : undefined
-        const daySpent = await ledger.total(dayKey())
-        const overDay = daySpent >= config.budget.perDayUSD
-        const overSession = !!s && s.spentUSD >= config.budget.perSessionUSD
+        const { d, today, rec, st, counters: c } = sessionID ? sessionView(sessionID) : { d: ledger.read(), today: 0, rec: undefined, st: undefined, counters: emptyCounters() }
+        const daySpent = sessionID ? today : d.days[day()] ?? 0
+        const eff = sessionID ? modeFor(sessionID) : effectiveMode()
+        const overDay = reached(config.budget.perDayUSD, daySpent)
+        const overSession = !!rec && reached(config.budget.perSessionUSD, rec.spentUSD)
         const state: JevSnapshot["state"] =
-          unavailableReason ? "unavailable" : mode === "off" ? "off" : priceError ? "unavailable" : s?.inflight ? "evaluating" : overDay || overSession ? "budget" : mode
-        const c = s?.counters
+          unavailableReason ? "unavailable" : eff === "off" ? "off" : priceError ? "unavailable" : st?.inflight ? "evaluating" : overDay || overSession ? "budget" : eff
         return {
           state,
-          mode,
+          mode: eff,
+          globalMode: mode,
+          modeSource: modeSource(sessionID),
           reason: unavailableReason ?? priceError ?? (config.mode === "off" ? "disabled in config" : null) ?? (overDay ? "daily budget reached" : overSession ? "session budget reached" : null),
           endpoint: config.endpoint,
           model: config.model,
           todayUSDEstimated: daySpent,
           perDayUSD: config.budget.perDayUSD,
           perSessionUSD: config.budget.perSessionUSD,
-          session: s && c
+          session: sessionID
             ? {
                 evaluations: c.runs,
+                applied: c.appliedRuns,
+                dryRuns: c.dryRuns,
+                failures: c.failures,
                 tokensRemovedEstimated: Math.max(0, c.contextTokensBefore - c.contextTokensAfter),
                 reductionPctEstimated: c.contextTokensBefore > 0 ? Math.round((1 - c.contextTokensAfter / c.contextTokensBefore) * 1000) / 10 : 0,
+                requestsPruned: c.requestsPruned,
+                tokensRemovedFromRequestsEstimated: c.tokensRemovedFromRequests,
                 jevTokensMeasured: c.jevInputTokensMeasured,
-                costUSDEstimated: s.spentUSD,
-                pruned: { dropped: s.decisions?.drop.size ?? 0, truncated: s.decisions?.truncate.size ?? 0 },
-                lastEvaluationAt: s.lastEvaluationAt ? new Date(s.lastEvaluationAt).toISOString() : null,
-                evaluating: !!s.inflight,
+                costUSDEstimated: rec?.spentUSD ?? 0,
+                pruned: { dropped: st?.decisions?.drop.size ?? 0, truncated: st?.decisions?.truncate.size ?? 0 },
+                lastEvaluationAt: rec?.lastEvaluationAt ? new Date(rec.lastEvaluationAt).toISOString() : null,
+                nativeCompactions: c.nativeCompactions,
+                resets: c.resets,
+                evaluating: !!st?.inflight,
               }
             : null,
         }
       }
 
+      const setSessionOverride = async (sessionID: string, next: Mode | undefined) => {
+        ledger.update((d) => {
+          const rec = session$(d, sessionID, now())
+          if (next) rec.override = next
+          else delete rec.override
+          rec.updatedAt = now()
+        })
+        if (next) overrides.set(sessionID, next)
+        else overrides.delete(sessionID)
+        // Never reuse decisions across a mode change: a re-enabled session starts clean (calls may be re-evaluated).
+        const st = sessions.get(sessionID)
+        if (st) (st.decisions = undefined), (st.lastFingerprint = undefined), (st.lastRunTokens = 0), (st.force = false)
+        emitChanged(sessionID)
+      }
+
       /** Command actions: pure state changes returning user-facing text. Shared by RPC and slash commands. */
       const actions = {
         status: (sessionID?: string) => statusText(sessionID),
-        stats: async (sessionID?: string) =>
-          (sessionID ? `${formatStats("This session", sessions.get(sessionID)?.counters ?? emptyCounters())}\n` : "") + formatStats("All sessions (persisted)", await ledger.counters()),
+        stats: async (sessionID?: string) => {
+          const v = sessionID ? sessionView(sessionID) : undefined
+          const d = v?.d ?? ledger.read()
+          const head = v
+            ? `This session: mode ${modeFor(sessionID!)} (${modeSource(sessionID)}); last successful evaluation ${v.rec?.lastEvaluationAt ? new Date(v.rec.lastEvaluationAt).toISOString() : "never"}; resets ${v.counters.resets}\n${formatStats("This session (persisted)", v.counters)}\n`
+            : ""
+          return head + formatStats("All sessions (persisted)", { ...emptyCounters(), ...d.counters }) + `\n  Today (UTC ${day()}): $${(d.days[day()] ?? 0).toFixed(5)} / ${formatLimit(config.budget.perDayUSD)} (est.)`
+        },
         setMode: async (next: Mode) => {
           if (next !== "off" && unavailableReason) return `Not changed: Jev is unavailable (${unavailableReason}).`
           if (next !== "off" && config.mode === "off")
             return 'Not changed: Jev is disabled in opencode.jsonc ("mode": "off" or "enabled": false). Change the config to enable it.'
           await setMode(next)
-          return next === "active" ? "Active: pruning outgoing requests in all sessions on this server." : next === "dry-run" ? "Dry-run: evaluating only; requests are not modified." : "Off: no Jev requests, no pruning."
+          const note = overrides.size ? ` Sessions with an override keep it (${overrides.size}).` : ""
+          return (next === "active" ? "Global: active (pruning outgoing requests)." : next === "dry-run" ? "Global: dry-run (evaluating only; requests are not modified)." : "Global: off (no Jev requests, no pruning).") + note
+        },
+        setSessionMode: async (sessionID: string | undefined, next: Mode | "inherit") => {
+          if (!sessionID) return noSession
+          if (next !== "inherit" && next !== "off" && config.mode === "off")
+            return 'Not changed: Jev is disabled in opencode.jsonc ("mode": "off"); the config kill switch overrides session settings.'
+          await setSessionOverride(sessionID, next === "inherit" ? undefined : next)
+          return next === "inherit"
+            ? `This session now inherits the global mode (${mode}).`
+            : `This session only: ${next === "off" ? "off (requests sent unpruned, no Jev requests)" : next === "dry-run" ? "dry-run (evaluate only)" : "active (pruning)"}. Other sessions unchanged.`
         },
         reset: (sessionID?: string) => {
           if (!sessionID) return noSession
@@ -568,10 +714,11 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
         },
         compact: (sessionID?: string) => {
           if (!sessionID) return noSession
-          if (mode === "off") return "Jev is off; enable it with /jev-enable or /jev-dry-run first."
+          const eff = modeFor(sessionID)
+          if (eff === "off") return `Jev is off for this session (${modeSource(sessionID)}); enable it first.`
           session(sessionID).force = true
           emitChanged(sessionID)
-          return `Jev will evaluate this session on its next model request (mode=${mode}). No request is sent now.`
+          return `Jev will evaluate this session on its next model request (mode=${eff}). No request is sent now.`
         },
       }
 
@@ -585,6 +732,7 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
         setMode: async (input: any) => ({ text: await actions.setMode(input.mode as Mode) }),
         reset: async (input: any) => ({ text: actions.reset(input.sessionID) }),
         compact: async (input: any) => ({ text: actions.compact(input.sessionID) }),
+        setSessionMode: async (input: any) => ({ text: await actions.setSessionMode(input.sessionID, input.mode) }),
       })
       emitChanged = (sessionID?: string) =>
         void (registration as any)?.events?.emit?.("changed", sessionID ? { sessionID } : {})?.catch?.(() => {})
@@ -609,7 +757,8 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
       return async () => {
         controller.abort()
         if (persistTimer) clearTimeout(persistTimer)
-        await ledger.flush()
+        flushCounters()
+        await writeSnapshot()
       }
     },
   }

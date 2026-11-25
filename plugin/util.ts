@@ -70,3 +70,8 @@ export function configDir(env: NodeJS.ProcessEnv = process.env): string {
 export function statsSnapshotPath(env: NodeJS.ProcessEnv = process.env): string {
   return env.JEV_STATS_FILE || join(env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "opencode-jev", "stats.json")
 }
+
+/** Shared accounting file (honours XDG_STATE_HOME); override with JEV_LEDGER_FILE. */
+export function ledgerPath(env: NodeJS.ProcessEnv = process.env): string {
+  return env.JEV_LEDGER_FILE || join(env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "opencode-jev", "ledger.json")
+}

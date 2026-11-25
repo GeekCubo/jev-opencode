@@ -18,8 +18,16 @@ const textOutput = {
 export type JevState = "active" | "dry-run" | "off" | "evaluating" | "unavailable" | "budget"
 
 export interface JevSessionSnapshot {
-  /** Jev evaluations run for this session. */
+  /** Jev evaluations run for this session (persisted across reloads and restarts). */
   evaluations: number
+  applied: number
+  dryRuns: number
+  failures: number
+  /** Outgoing requests that had cached decisions applied, and estimated tokens removed across them. */
+  requestsPruned: number
+  tokensRemovedFromRequestsEstimated: number
+  nativeCompactions: number
+  resets: number
   /** Estimated (character-based) tokens removed from outgoing requests so far. */
   tokensRemovedEstimated: number
   /** Estimated context reduction of the last evaluations, 0–100. */
@@ -28,6 +36,7 @@ export interface JevSessionSnapshot {
   jevTokensMeasured: number
   /** Jev cost: reported tokens × list price (an estimate of the bill). */
   costUSDEstimated: number
+  /** Decisions applied right now (in memory; cleared on reload, reset, mode change or native compaction). */
   pruned: { dropped: number; truncated: number }
   lastEvaluationAt: string | null
   evaluating: boolean
@@ -35,13 +44,17 @@ export interface JevSessionSnapshot {
 
 export interface JevSnapshot {
   state: JevState
+  /** Effective mode for the requested session (or the global mode without a session). */
   mode: "off" | "dry-run" | "active"
+  globalMode: "off" | "dry-run" | "active"
+  modeSource: "inherited from global" | "session override" | "config kill switch" | "unavailable"
   reason: string | null
   endpoint: string
   model: string
   todayUSDEstimated: number
-  perDayUSD: number
-  perSessionUSD: number
+  /** null = unlimited. */
+  perDayUSD: number | null
+  perSessionUSD: number | null
   session: JevSessionSnapshot | null
 }
 
@@ -63,6 +76,16 @@ export const JevRpc = Rpc.define({
     },
     reset: { input: { ...sessionInput, required: ["sessionID"] }, output: textOutput },
     compact: { input: { ...sessionInput, required: ["sessionID"] }, output: textOutput },
+    /** Per-session mode override; "inherit" removes it. */
+    setSessionMode: {
+      input: {
+        type: "object",
+        properties: { sessionID: { type: "string" }, mode: { type: "string", enum: ["off", "dry-run", "active", "inherit"] } },
+        required: ["sessionID", "mode"],
+        additionalProperties: false,
+      },
+      output: textOutput,
+    },
   },
   events: {
     /** Jev state changed (mode, evaluation started/finished, reset, budget). Clients re-read `snapshot`. */

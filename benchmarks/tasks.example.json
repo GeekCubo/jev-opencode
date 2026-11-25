@@ -1,0 +1,25 @@
+{
+  "repo": "/path/to/benchmark-repo",
+  "commit": "<full commit sha, identical for A and B>",
+  "acceptance": "npm test",
+  "tasks": [
+    {
+      "id": "t1-investigate-fix",
+      "kind": "Repository investigation and bug fixing",
+      "prompt": "A user reports <symptom>. Find the root cause in this repository, fix it, add a regression test, and run the relevant tests. Report the root cause and files changed.",
+      "acceptance": "npm test -- <relevant test path>"
+    },
+    {
+      "id": "t2-multifile-feature",
+      "kind": "Multi-file feature implementation",
+      "prompt": "Implement <feature> as described in docs/<spec>.md: <short acceptance criteria>. Follow existing architecture, add tests, and run them.",
+      "acceptance": "npm test"
+    },
+    {
+      "id": "t3-long-debug-refactor",
+      "kind": "Long-running debugging or refactoring",
+      "prompt": "Refactor <module> to <goal> without changing behaviour. The existing test suite must keep passing; investigate and fix any failures you cause. Report what changed.",
+      "acceptance": "npm test"
+    }
+  ]
+}

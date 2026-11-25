@@ -14,10 +14,10 @@ This is an OpenCode port of [fast-jev-compaction](https://github.com/tamaratran/
 - **Non-destructive.** Pruning applies only to the outgoing model request. Stored history is untouched, and kept content stays verbatim.
 - **Context protection.** Protected categories are never offered to Jev (see [Context protection](#context-protection)).
 - **Recovery.** `/jev-reset` restores the full context of the current session.
-- **Modes.** Active, dry-run or disabled. The mode applies to the whole OpenCode service and persists.
+- **Modes.** Active, dry-run or disabled: a global default for the whole OpenCode service, plus optional per-session overrides. Both persist.
 - **TUI and Desktop.** Slash commands, toasts and dialogs in both clients, plus status indicators: a welcome-screen label in both, a sidebar section in the TUI, and a status pill in Desktop.
-- **Statistics.** Per-session and overall statistics, with measured figures kept separate from estimates.
-- **Cost controls.** Per-session and per-day spending limits, a price cap, a cooldown, a growth gate, bounded retries and timeouts.
+- **Statistics.** Per-session and overall statistics, persisted across reloads and restarts, with measured figures kept separate from estimates.
+- **Cost controls.** Optional per-session and per-day spending limits (each can be unlimited), shared across all projects; a price cap, a cooldown, a growth gate, bounded retries and timeouts.
 - **Native compaction preserved.** OpenCode's own `/compact` and automatic compaction are unchanged and remain the fallback.
 - **Providers.** TypeSafe Direct is the default; OpenCode Zen is optional. Provider-independent by design: it edits OpenCode's provider-neutral message format, and the unit tests exercise several provider IDs. End-to-end tests used a mock OpenAI-compatible provider only.
 - **Replaceable backend.** The evaluator sits behind a small interface (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
@@ -33,6 +33,10 @@ Synthetic demo sessions with a mock coding model. TUI images are rendered from e
 | Desktop welcome screen | Desktop session status pill | Desktop `/jev-status` |
 |---|---|---|
 | ![Desktop welcome](docs/screenshots/desktop-welcome-status.png) | ![Desktop pill](docs/screenshots/desktop-session-pill.png) | ![Desktop status](docs/screenshots/desktop-status-dialog.png) |
+
+| TUI session override (sidebar shows `Disabled · session`) | Desktop: session override in the pill while the global mode (bottom strip) stays Active |
+|---|---|
+| ![TUI session override](docs/screenshots/tui-session-override.png) | ![Desktop session override](docs/screenshots/desktop-session-override.png) |
 
 ## Quick start
 
@@ -99,6 +103,23 @@ The prebuilt Desktop bundle (`plugin/dist/gui-experimental.cjs`) is included, so
 - **Start in dry-run.** New installations default to dry-run. Switch to active (`/jev-enable`) only after checking `/jev-stats`.
 - **Mode scope.** The mode applies to **every session and project on the same OpenCode service**. It is stored in plugin storage and survives reloads and restarts. The `mode` option sets the initial value, and a mode chosen by command takes precedence, except that `"mode": "off"` in config always wins.
 
+### Global mode and session overrides
+
+The effective mode of a session is decided in this order:
+1. **Config kill switch.** `"mode": "off"` (or `enabled: false`) in `opencode.jsonc` wins over everything, and the mode commands report that they can't change it.
+2. **Session override,** set with `/jev-session-enable`, `/jev-session-dry-run` or `/jev-session-disable`. It applies only to that session and persists across reloads and restarts.
+3. **Global mode,** set with `/jev-enable`, `/jev-dry-run` or `/jev-disable`. It is the default for every other session, including new ones.
+
+Changing the global mode leaves existing overrides in place. `/jev-session-inherit` removes a session's override. Changing a session's mode discards its in-memory pruning decisions, so a re-enabled session starts clean rather than reusing old decisions. Indicators show where the mode came from (`· global`, `· session` or `· config`).
+
+### Spending limits
+
+- **Optional.** Each limit is a number in USD, or `null` for **unlimited**: `"budget": { "perDayUSD": null, "perSessionUSD": 0.25 }`. No other value means unlimited, and invalid values disable the plugin with a logged reason.
+- **Defaults for new installs:** $1.00 per day and $0.25 per session.
+- **Spend is always tracked,** even when unlimited. Indicators show `$X / Unlimited`.
+- **When a limit is reached,** Jev stops starting new paid evaluations, and the status shows "Budget reached". The coding session continues, and pruning decisions already made for that session keep being applied.
+- **Unaffected by limits:** failure protection, retries, cooldowns and concurrency limits apply whether or not limits are set.
+
 ## Configuration reference
 
 All options go in `options` of the plugin entry. Invalid options disable the plugin with a logged reason.
@@ -122,8 +143,8 @@ All options go in `options` of the plugin entry. Invalid options disable the plu
 | `maxStateTokens` / `maxRequestTokens` | `25000` / `30000` | Size limits for one Jev request. |
 | `timeoutMs` | `20000` | Timeout per Jev HTTP request. |
 | `maxRetries` | `2` | Retries per Jev request, for transient errors only. |
-| `budget.perSessionUSD` | `0.25` | Estimated Jev spend allowed per session. |
-| `budget.perDayUSD` | `1` | Estimated Jev spend allowed per UTC day, shared by all sessions. |
+| `budget.perSessionUSD` | `0.25` | Estimated Jev spend allowed per session, in USD. `null` = unlimited. |
+| `budget.perDayUSD` | `1` | Estimated Jev spend allowed per UTC day, shared by all sessions and projects of this user, in USD. `null` = unlimited. |
 | `nativeFallback` | `true` | Recorded in statistics. Native compaction always remains active. |
 | `fallbackCompactionModel` | unset | Optional `provider/model` for OpenCode's native summary agent only. Off unless you set it. |
 | `protectTools` | `[]` | Extra regexes for tool names that are never pruned. |
@@ -142,11 +163,17 @@ All options go in `options` of the plugin entry. Invalid options disable the plu
 | `/jev-stats` | Show statistics (dialog) | no (session section only in a session) |
 | `/jev-reset` | Restore the full context of the current session | yes |
 | `/jev-compact` | Evaluate the current session on its next request, ignoring threshold and cooldown but not the budget | yes |
+| `/jev-session-enable` | Active for the current session only | yes |
+| `/jev-session-dry-run` | Dry-run for the current session only | yes |
+| `/jev-session-disable` | Off for the current session only (unpruned requests, no Jev requests) | yes |
+| `/jev-session-inherit` | Remove the current session's override; it follows the global mode again | yes |
 
 - **Without a session.** Session commands run outside a session show a warning and do nothing.
 - **No conversation side effects.** Commands never call a model or Jev and never add messages to the conversation.
 - **Not the same as `/compact`.** `/jev-compact` is separate from OpenCode's native `/compact`, which summarizes the conversation and is unchanged.
 - **Session-wide reset only.** Restoring an individual tool result is not supported; `/jev-reset` restores the whole session.
+
+Statistics are persisted per session in the shared accounting file (numbers only), so evaluation counts, tokens removed, cost and "last run" survive plugin reloads and service restarts. What doesn't persist is the set of *currently applied* pruning decisions. After a reload, a session sends its full context until Jev evaluates it again; the indicators show historical figures and `/jev-status` reports "pruning applied now: none".
 
 The same statistics are available outside OpenCode:
 
@@ -217,7 +244,8 @@ Tool **outputs are not sent**. Anything OpenCode places in user or assistant tex
 Redaction is **best effort**: secrets in other formats, or written in prose, can still be sent.
 
 **Stored locally:**
-- the mode, statistics and spend counters, in OpenCode plugin storage;
+- the global mode, in OpenCode plugin storage;
+- spend, reservations, per-session numeric statistics and per-session mode overrides, in `$XDG_STATE_HOME/opencode-jev/ledger.json` (default `~/.local/state/…`, mode 600, numbers and session IDs only);
 - a counters-only snapshot in `$XDG_STATE_HOME/opencode-jev/stats.json` (default `~/.local/state/…`, mode 600).
 
 Transcripts are never logged.
@@ -246,15 +274,15 @@ Jev is an external service, and this plugin is not local or offline while active
 | No evaluations | Context is below `min(compactAtTokens, 0.6 × window)`, or it hasn't grown by `minGrowthTokens`, or the cooldown is active, or the mode is `off`. Use `/jev-compact` to force one. |
 | "Unavailable" status | Unknown or over-cap model price, missing hook, or no API key. Check `/jev-status` and the OpenCode log for `[jev]` lines. |
 | Invalid key or unknown model | Look for `[jev] … Jev HTTP 401/403/400` in the log. Fix the key file or the model name. |
-| "Budget reached" | Wait for the next UTC day, or raise `budget.*`. |
+| "Budget reached" | Wait for the next UTC day, raise `budget.*`, or set it to `null` (unlimited). |
 | TypeSafe outage | Nothing to do: requests go out unpruned. Optionally run `/jev-disable` to avoid retry delays. |
-| Something important seems missing | `/jev-reset` in that session. |
+| Something important seems missing | `/jev-reset` in that session, or `/jev-session-disable` to stop pruning it. |
 | Unsupported OpenCode version | Run `/jev-disable`, or remove the plugin entry. |
 
 ## Uninstall
 
 1. Remove the plugin entry from `plugins` in `opencode.jsonc`. OpenCode reloads automatically. (To keep it installed but stop all Jev requests, set `"mode": "off"` instead.)
-2. Optionally delete the checkout, `~/.config/opencode/typesafe-api-key` and `~/.local/state/opencode-jev/`.
+2. Optionally delete the checkout, `~/.config/opencode/typesafe-api-key` and `~/.local/state/opencode-jev/` (the accounting file and statistics snapshot).
 
 This does not touch conversations, projects, provider credentials or other plugins. Plugin storage (mode and counters) stays inert inside OpenCode's database.
 
@@ -271,7 +299,7 @@ These are preliminary results under controlled conditions. They are **not** bill
   - Estimated tokens: 20,342 → 8,401 (11,941 removed, about 58.7%).
   - Characters: the same run measured 76,795 → 32,382 characters (57.8%). The two methods measure different things and shouldn't be mixed.
 - **Latency.** TypeSafe latency in that live test was a median of 341 ms (min 286, max 620) over 3 full-evaluation requests. Separately, a small sanity request took 630 ms. The sample is tiny.
-- **Tests.** 85 automated tests pass; 6 are skipped by default (5 opt-in live tests and 1 upstream HTTP-client test).
+- **Tests.** 95 automated tests pass; 6 are skipped by default (5 opt-in live tests and 1 upstream HTTP-client test).
 
 ### Real-world coding benchmark: pending
 

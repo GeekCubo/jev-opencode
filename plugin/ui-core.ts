@@ -9,6 +9,7 @@ export interface JevClient {
   setMode(input: { mode: "off" | "dry-run" | "active" }): Promise<{ text: string }>
   reset(input: { sessionID: string }): Promise<{ text: string }>
   compact(input: { sessionID: string }): Promise<{ text: string }>
+  setSessionMode(input: { sessionID: string; mode: "off" | "dry-run" | "active" | "inherit" }): Promise<{ text: string }>
 }
 
 export type Tone = "info" | "success" | "warning" | "error"
@@ -58,6 +59,10 @@ export function jevCommandList(host: UiHost): JevCommand[] {
     { name: "jev-disable", title: "Jev: disable (all sessions)", run: mode("off") },
     { name: "jev-reset", title: "Jev: restore full context for this session", run: perSession("jev-reset", (sessionID) => host.rpc().reset({ sessionID })) },
     { name: "jev-compact", title: "Jev: evaluate this session on its next request", run: perSession("jev-compact", (sessionID) => host.rpc().compact({ sessionID })) },
+    { name: "jev-session-enable", title: "Jev: active for this session only", run: perSession("jev-session-enable", (sessionID) => host.rpc().setSessionMode({ sessionID, mode: "active" })) },
+    { name: "jev-session-dry-run", title: "Jev: dry-run for this session only", run: perSession("jev-session-dry-run", (sessionID) => host.rpc().setSessionMode({ sessionID, mode: "dry-run" })) },
+    { name: "jev-session-disable", title: "Jev: off for this session only", run: perSession("jev-session-disable", (sessionID) => host.rpc().setSessionMode({ sessionID, mode: "off" })) },
+    { name: "jev-session-inherit", title: "Jev: this session follows the global mode", run: perSession("jev-session-inherit", (sessionID) => host.rpc().setSessionMode({ sessionID, mode: "inherit" })) },
   ]
 }
 
@@ -85,6 +90,8 @@ const ago = (iso: string | null, now: number) => {
   return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`
 }
 
+const limit = (n: number | null) => (n === null ? "Unlimited" : usd(n))
+
 /** One-line welcome/footer label, e.g. "Jev: Active · TypeSafe". */
 export function shortLabel(snap: JevSnapshot | undefined): string {
   if (!snap) return "Jev: Unavailable"
@@ -96,14 +103,15 @@ export function shortLabel(snap: JevSnapshot | undefined): string {
 export function sidebarRows(snap: JevSnapshot | undefined, now = Date.now()): Array<[string, string]> {
   if (!snap) return [["Status", "Unavailable"]]
   const s = snap.session
+  const source = snap.modeSource === "session override" ? "session" : snap.modeSource === "config kill switch" ? "config" : snap.modeSource === "unavailable" ? "" : "global"
   const rows: Array<[string, string]> = [
-    ["Status", STATE_LABEL[snap.state] + (snap.reason && snap.state !== "off" ? ` (${snap.reason})` : "")],
+    ["Status", STATE_LABEL[snap.state] + (source ? ` · ${source}` : "") + (snap.reason && snap.state !== "off" ? ` (${snap.reason})` : "")],
     ["Model", snap.model],
     ["Evaluations", String(s?.evaluations ?? 0)],
     ["Tokens removed", `~${(s?.tokensRemovedEstimated ?? 0).toLocaleString("en-US")} (est.)`],
     ["Reduction", `~${s?.reductionPctEstimated ?? 0}% (est.)`],
-    ["Session cost", `${usd(s?.costUSDEstimated ?? 0)} (est.; ${(s?.jevTokensMeasured ?? 0).toLocaleString("en-US")} tok measured)`],
-    ["Today", `${usd(snap.todayUSDEstimated)} / ${usd(snap.perDayUSD)}`],
+    ["Session cost", `${usd(s?.costUSDEstimated ?? 0)} / ${limit(snap.perSessionUSD)} (est.; ${(s?.jevTokensMeasured ?? 0).toLocaleString("en-US")} tok measured)`],
+    ["Today", `${usd(snap.todayUSDEstimated)} / ${limit(snap.perDayUSD)}`],
     ["Last run", ago(s?.lastEvaluationAt ?? null, now)],
   ]
   return rows

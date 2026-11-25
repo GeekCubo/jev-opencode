@@ -49,7 +49,9 @@ npm run build:gui      # regenerates plugin/dist/gui-experimental.cjs
 cd ~/.local/share/opencode-plugins/jev-opencode && git pull
 ```
 
-Then run `/reload` in TUIs and reopen Desktop windows. The mode, statistics and spend are kept. In-memory pruning decisions are cleared, so full context returns until the next evaluation.
+Then run `/reload` in TUIs and reopen Desktop windows. The global mode, per-session overrides, statistics and spend are kept. In-memory pruning decisions are cleared, so full context returns until the next evaluation.
+
+Upgrading from 0.1.0 to 0.2.0: today's spend and the overall counters are migrated once from OpenCode plugin storage into the new accounting file. Per-session figures start from zero, because 0.1.0 didn't persist them.
 
 ## Disable, rollback and remove
 
@@ -57,7 +59,7 @@ Then run `/reload` in TUIs and reopen Desktop windows. The mode, statistics and 
 - **Unload:** remove the plugin entry from `opencode.jsonc`, or restore your backup of that file.
 - **Remove files:**
   ```sh
-  rm -rf ~/.local/share/opencode-plugins/jev-opencode ~/.local/state/opencode-jev ~/.config/opencode/typesafe-api-key
+  rm -rf ~/.local/share/opencode-plugins/jev-opencode ~/.local/state/opencode-jev ~/.config/opencode/typesafe-api-key   # also deletes spend history
   ```
 
 None of this touches conversations, projects, provider credentials or other plugins.

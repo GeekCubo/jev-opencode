@@ -14,11 +14,11 @@ function fake(sessionID: string | undefined, rpcImpl: Record<string, Function>) 
   return { cmds, notes, shown }
 }
 const ok = (text: string) => vi.fn(async () => ({ text }))
-const rpc = () => ({ status: ok("mode=active"), stats: ok("Jev runs: 0"), setMode: ok("Active: ..."), reset: ok("Restored 2"), compact: ok("Jev will evaluate"), snapshot: vi.fn() })
+const rpc = () => ({ status: ok("mode=active"), stats: ok("Jev runs: 0"), setMode: ok("Active: ..."), reset: ok("Restored 2"), compact: ok("Jev will evaluate"), setSessionMode: ok("This session only"), snapshot: vi.fn() })
 
 describe("shared command layer (TUI and Desktop GUI)", () => {
-  it("registers exactly the seven slash commands", () => {
-    expect(Object.keys(fake(undefined, rpc()).cmds).sort()).toEqual(["jev-compact", "jev-disable", "jev-dry-run", "jev-enable", "jev-reset", "jev-stats", "jev-status"])
+  it("registers the seven global commands and the four session-override commands", () => {
+    expect(Object.keys(fake(undefined, rpc()).cmds).sort()).toEqual(["jev-compact", "jev-disable", "jev-dry-run", "jev-enable", "jev-reset", "jev-session-disable", "jev-session-dry-run", "jev-session-enable", "jev-session-inherit", "jev-stats", "jev-status"])
   })
   it("welcome screen: success never throws, never shows an error, no per-session RPC", async () => {
     const r = rpc()
@@ -59,8 +59,8 @@ describe("shared command layer (TUI and Desktop GUI)", () => {
 
 describe("status indicator formatting", () => {
   const snap = (over: Partial<JevSnapshot> = {}): JevSnapshot => ({
-    state: "active", mode: "active", reason: null, endpoint: "typesafe", model: "jev-1.14", todayUSDEstimated: 0.0157, perDayUSD: 1, perSessionUSD: 0.25,
-    session: { evaluations: 3, tokensRemovedEstimated: 41234, reductionPctEstimated: 57.1, jevTokensMeasured: 9000, costUSDEstimated: 0.0004, pruned: { dropped: 9, truncated: 1 }, lastEvaluationAt: new Date(Date.now() - 90_000).toISOString(), evaluating: false },
+    state: "active", mode: "active", globalMode: "active", modeSource: "inherited from global", reason: null, endpoint: "typesafe", model: "jev-1.14", todayUSDEstimated: 0.0157, perDayUSD: 1, perSessionUSD: 0.25,
+    session: { evaluations: 3, applied: 3, dryRuns: 0, failures: 0, requestsPruned: 4, tokensRemovedFromRequestsEstimated: 90000, nativeCompactions: 0, resets: 0, tokensRemovedEstimated: 41234, reductionPctEstimated: 57.1, jevTokensMeasured: 9000, costUSDEstimated: 0.0004, pruned: { dropped: 9, truncated: 1 }, lastEvaluationAt: new Date(Date.now() - 90_000).toISOString(), evaluating: false },
     ...over,
   })
   it("labels every state", () => {

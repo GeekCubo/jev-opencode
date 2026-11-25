@@ -18,6 +18,12 @@ Minimum tested: 2.2.7. Earlier 2.x releases are untested. Do not assume newer ve
 - `ui-core.ts`: client-neutral commands and indicator formatting.
 - `tui.tsx`, `gui.tsx`: thin client adapters.
 
+## Local state
+
+- Accounting uses a lock file on the local filesystem (`$XDG_STATE_HOME/opencode-jev/`).
+- Tested on Linux with Node's `fs` under OpenCode 2.2.7's runtime.
+- Network filesystems are unsupported.
+
 ## Capability handling
 
 - **Server:** if `session.hook("context")` is missing or throws, Jev logs one warning, reports `Unavailable` and leaves requests untouched. Native compaction is unaffected. Optional hooks (`compaction`, `generate`) and the agent transform are skipped individually.

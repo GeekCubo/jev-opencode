@@ -1,58 +1,97 @@
-# Real-world A/B benchmark protocol (pending)
+# Real-world A/B benchmark (prepared, not run)
 
-Goal: measure whether Jev active mode lowers the total cost of real coding work (coding provider plus Jev) without lowering task quality. No results are published yet.
+Goal: measure whether Jev active mode lowers the **total** cost of real coding work (coding provider plus Jev) without lowering task quality. No results are published yet.
 
-## Configurations
+## Groups
 
 | | A: baseline | B: Jev |
 |---|---|---|
 | OpenCode | same version | same version |
 | Coding model, provider, reasoning effort | identical | identical |
-| Jev | plugin entry removed, or `mode: "off"` | `mode: "active"`, default thresholds |
+| Agents, AGENTS.md, delegation instructions, tools, permissions | identical | identical |
 | Native compaction | enabled (default) | enabled (default) |
+| Jev | off | active, default thresholds |
 
-The Jev mode is global to an OpenCode **service**, so different projects on one service are not isolated from each other. Use one of these:
-- **Separate instances (preferred):** two independent OpenCode instances, each with its own `HOME`/`XDG_*` and its own service or `opencode serve --port`. A and B can then run in parallel.
-- **Sequential runs on one instance:** switch the mode between runs and confirm it with `/jev-status` before each run.
+## Isolation
 
-## Controls
+Use **two independent OpenCode instances**, one per group (`setup-instance.sh`). Each has its own config, state, data and service port, copied from your config with only the Jev mode changed. Both can run in parallel.
 
-For every task, both runs use:
-- the same starting commit, in separate `git worktree`s;
-- identical prompts, given verbatim, with corrective prompts recorded separately;
-- fresh sessions, and identical AGENTS.md, project instructions, tools, permissions and agent configuration;
-- the same acceptance tests, run after the agent finishes.
+Alternative on one service: use per-session overrides. `/jev-session-disable` in the A sessions and `/jev-session-enable` in the B sessions isolate the mode per session (0.2.0+). A and B then share one daily Jev limit and one service; confirm each session's mode with `/jev-status` before sending the prompt.
 
-To reduce nondeterminism and cache effects:
-- run each task at least 3 times per configuration, alternating the order (A, B, B, A, …);
-- don't reuse sessions;
-- wait longer than the provider's cache lifetime between paired runs, or record the cache reads explicitly;
-- report the spread across runs, not only the means.
+Don't rely on different projects for isolation: the global mode is per service.
+
+## Tasks
+
+At least three matched pairs; see `tasks.example.json`:
+1. Repository investigation and bug fixing.
+2. Multi-file feature implementation.
+3. Long-running debugging or refactoring (long enough to pass the 60k-token threshold).
+
+Each task has a fixed prompt, a fixed starting commit and an acceptance command. Use open-source or synthetic repositories for anything you publish.
+
+## Procedure
+
+```sh
+# 0. Prepare (no paid requests).
+sh benchmarks/setup-instance.sh A ~/jev-ab ~/.config/opencode/opencode.jsonc 18801
+sh benchmarks/setup-instance.sh B ~/jev-ab ~/.config/opencode/opencode.jsonc 18802
+for g in A B; do for t in t1 t2 t3; do for n in 1 2 3; do
+  git -C /path/to/benchmark-repo worktree add --detach ~/jev-ab/wt/$t-$g-$n <commit>
+done; done; done
+
+# 1. Start both instances.
+(. ~/jev-ab/A/env.sh && opencode service start); (. ~/jev-ab/B/env.sh && opencode service start)
+
+# 2. For each run: open the worktree in that group's instance, start a fresh session, pick the model
+#    (the same provider/model and reasoning variant for A and B), check /jev-status, and paste the task prompt verbatim.
+(. ~/jev-ab/B/env.sh && cd ~/jev-ab/wt/t1-B-1 && opencode)
+
+# 3. After the agent finishes: run the acceptance command in the worktree and record the outcome.
+#    Write results/<task>-<A|B>-<n>.outcome.json:
+#    {"testsPassed":true,"completed":true,"corrections":0,"reviewer":"pass","billedProviderUSD":null,"billedJevUSD":null}
+
+# 4. Collect (read-only; no model or Jev requests). The session ID is shown in /jev-status, or list sessions via the API.
+. ~/jev-ab/B/env.sh
+OPENCODE_SERVER_PASSWORD=$(node -pe 'JSON.parse(require("fs").readFileSync(process.env.XDG_CONFIG_HOME+"/opencode/service.json")).password') \
+  node benchmarks/collect.mjs http://127.0.0.1:18802 ~/jev-ab/wt/t1-B-1 <sessionID> \
+  --jev-ledger "$XDG_STATE_HOME/opencode-jev/ledger.json" > results/t1-B-1.json
+
+# 5. Compare.
+node benchmarks/aggregate.mjs results/*.json > results/summary.json
+```
+
+Order and repetitions:
+- **Runs:** at least 3 per group per task.
+- **Order:** alternate A and B (A1, B1, B2, A2, A3, B3), so time-of-day and provider caching don't favour one group.
+- **Sessions:** fresh for every run; never reuse a session or worktree.
+- **Cache:** cross-session cache reuse is possible within a provider's cache lifetime (often 5 minutes to 1 hour). Either space paired runs further apart, or keep cache-read tokens visible in the comparison, which `collect.mjs` does.
+
+## Cost control
+
+- **Coding-model spend.** Before you start, put a hard limit at the provider (Apixo dashboard or key limit) for the benchmark.
+- **Estimate.** Expected spend ≈ runs × typical task cost. With 3 tasks × 2 groups × 3 runs, that is 18 sessions.
+- **Jev spend.** The B instance keeps the defaults of $0.25 per session and $1.00 per day. These cap Jev, not the coding model.
+- **Stop rule.** Stop a run that exceeds 2× the median of its group, and record it as such. Don't retry failed runs silently; record them.
+- **Separate keys.** Use a dedicated provider key or project if your provider supports it, so the bill can be attributed to the benchmark.
 
 ## Measurements
 
-Run after each session (read-only; makes no model or Jev requests):
-
-```sh
-OPENCODE_SERVER_PASSWORD=... node benchmarks/collect.mjs http://127.0.0.1:<port> <worktree> <sessionID> \
-  --jev-stats <that instance's>/.local/state/opencode-jev/stats.json > results/<task>-<A|B>-<n>.json
-```
-
 | Metric | Source | Kind |
 |---|---|---|
-| Uncached input, cache-read, cache-write, output and reasoning tokens | OpenCode step data | measured (provider-reported) |
-| Coding-model requests (including subagent sessions) | OpenCode messages | measured |
-| Peak context | max(input + cache) per step | measured |
-| Native compaction events | OpenCode messages | measured |
-| Coding-provider cost | OpenCode `cost` (0 if the provider reports none) | measured, otherwise take it from the provider's bill |
-| Jev evaluations and requests | plugin statistics | measured |
-| Jev input tokens | TypeSafe `usage.input_tokens` | measured |
-| Jev cost | tokens × list price | estimate; confirm against the TypeSafe bill |
-| Context before/after pruning | plugin statistics | estimate |
-| Runtime | wall clock | measured |
-| Tests passed, task completed, regressions, corrective prompts | acceptance tests and a reviewer | measured / judged |
+| Uncached input, cache-read, cache-write, output and reasoning tokens | OpenCode step data, including subagent sessions | provider-reported |
+| Coding-model requests, tool calls, tool errors, failed steps | OpenCode messages | provider-reported / OpenCode |
+| Peak context | max(input + cache) per step | provider-reported |
+| Native compactions | OpenCode messages | OpenCode |
+| Coding-provider cost | OpenCode `cost` | provider-reported; replace with `billedProviderUSD` from the bill when available |
+| Jev evaluations, requests, failures, input tokens | accounting file (per session) | measured |
+| Jev cost | tokens × list price | estimate; replace with `billedJevUSD` from the TypeSafe bill |
+| Context before/after pruning, tokens removed | accounting file | estimate |
+| Duration | first to last message | measured |
+| Tests passed, completed, corrections, reviewer verdict | acceptance command and the outcome file | measured / judged |
 
-Report **total cost = provider cost + Jev cost** per task, along with completion and quality. Fewer tokens alone is not a saving: pruning changes the request prefix and can increase cache writes. Compare cache-read and cache-write volumes between A and B.
+**Net savings = mean total(A) − mean total(B)**, where total = provider cost + Jev cost. Cache effects are already inside the provider cost, because cache writes and reads are billed there. A token reduction is not a saving by itself: pruning changes the request prefix and can add cache writes. Report savings only alongside the quality fields, and treat overlapping ranges or fewer than 3 runs per group as inconclusive.
+
+Have the correctness assessment done independently: a reviewer who doesn't know which group a run belongs to (for example the Reviewer agent, given only the diff and the task).
 
 ## Data handling
 

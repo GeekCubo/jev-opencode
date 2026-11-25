@@ -185,7 +185,7 @@ describe("plugin lifecycle", () => {
   it("registers documented hooks and the RPC; no throwing server commands by default", async () => {
     const { f } = await setup()
     expect(Object.keys(f.hooks).sort()).toEqual(["compaction", "context", "generate"])
-    expect(Object.keys(f.rpc).sort()).toEqual(["compact", "reset", "setMode", "snapshot", "stats", "status"])
+    expect(Object.keys(f.rpc).sort()).toEqual(["compact", "reset", "setMode", "setSessionMode", "snapshot", "stats", "status"])
     expect(Object.keys(f.serverCommands)).toEqual([])
   })
 
@@ -194,7 +194,7 @@ describe("plugin lifecycle", () => {
     for (const m of ["status", "stats"]) expect((await f.rpc[m]!({})).text).toMatch(/mode=|Jev runs/)
     expect((await f.rpc.reset!({})).text).toMatch(/No session yet/)
     expect((await f.rpc.compact!({})).text).toMatch(/No session yet/)
-    expect((await f.rpc.setMode!({ mode: "dry-run" })).text).toMatch(/Dry-run/)
+    expect((await f.rpc.setMode!({ mode: "dry-run" })).text).toMatch(/dry-run/)
     expect(jev.calls.length).toBe(0)
     expect(f.synthetic.length).toBe(0)
   })
@@ -323,7 +323,7 @@ describe("plugin lifecycle", () => {
     const { f, jev } = await setup({ mode: "active" })
     await f.commands["jev-disable"].execute({ sessionID: "s1" })
     expect(f.storage.get("mode")).toBe("off")
-    expect(f.synthetic.at(-1).text).toMatch(/^Off:/)
+    expect(f.synthetic.at(-1).text).toMatch(/^Global: off/)
     const { UserMessage } = await import("@opencode/ai")
     // legacy status messages (from earlier builds) are still stripped from model requests
     const status = new UserMessage({ role: "user", content: [{ type: "text", text: "[jev-compaction status]\nold" }] })
@@ -500,7 +500,7 @@ describe("shared state for TUI/GUI indicators", () => {
     expect(s.session.lastEvaluationAt).toMatch(/^\d{4}-/)
     for (let i = 0; i < 5; i++) await f.rpc.snapshot!({ sessionID: "s1" })
     expect(jev.calls.length).toBe(n)
-    expect((await f.rpc.snapshot!({ sessionID: "other" })).session).toBeNull()
+    expect((await f.rpc.snapshot!({ sessionID: "other" })).session).toMatchObject({ evaluations: 0, costUSDEstimated: 0, lastEvaluationAt: null })
   })
   it("states: dry-run, off, budget reached, unavailable", async () => {
     const { f } = await setup()

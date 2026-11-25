@@ -42,7 +42,8 @@ export interface JevConfig {
   cooldownMs: number
   timeoutMs: number
   maxRetries: number
-  budget: { perSessionUSD: number; perDayUSD: number }
+  /** USD limits on estimated Jev spend. `null` = unlimited (spend is still tracked). */
+  budget: { perSessionUSD: number | null; perDayUSD: number | null }
   /** Ask OpenCode to run native summary compaction when Jev cannot reduce enough. */
   nativeFallback: boolean
   /** Extra regexes (as strings) whose matching tool names are never pruned. */
@@ -81,6 +82,17 @@ function num(v: unknown, fallback: number, min: number, max: number, name: strin
     throw new ConfigError(`${name} must be a number in [${min}, ${max}]`)
   return v
 }
+
+/** A spending limit: a number in [0, max], or `null` for explicitly unlimited. Anything else is rejected. */
+function limit(v: unknown, fallback: number, max: number, name: string): number | null {
+  if (v === null) return null
+  return num(v, fallback, 0, max, name + " (or null for unlimited)")
+}
+
+/** True when `spent + add` would exceed the limit. Unlimited never exceeds. */
+export const exceeds = (limitUSD: number | null, spent: number, add = 0) => limitUSD !== null && spent + add > limitUSD
+export const reached = (limitUSD: number | null, spent: number) => limitUSD !== null && spent >= limitUSD
+export const formatLimit = (limitUSD: number | null) => (limitUSD === null ? "Unlimited" : `$${limitUSD.toFixed(2)}`)
 
 /**
  * Accepts either a flat options object or the nested `{ compaction: {...}, routing: {...} }`
@@ -122,8 +134,8 @@ export function resolveConfig(raw: Record<string, unknown> = {}): JevConfig {
     timeoutMs: num(src.timeoutMs, DEFAULTS.timeoutMs, 1_000, 120_000, "timeoutMs"),
     maxRetries: num(src.maxRetries, DEFAULTS.maxRetries, 0, 5, "maxRetries"),
     budget: {
-      perSessionUSD: num(src.budget?.perSessionUSD, DEFAULTS.budget.perSessionUSD, 0, 100, "budget.perSessionUSD"),
-      perDayUSD: num(src.budget?.perDayUSD, DEFAULTS.budget.perDayUSD, 0, 1_000, "budget.perDayUSD"),
+      perSessionUSD: limit(src.budget?.perSessionUSD, DEFAULTS.budget.perSessionUSD!, 100, "budget.perSessionUSD"),
+      perDayUSD: limit(src.budget?.perDayUSD, DEFAULTS.budget.perDayUSD!, 1_000, "budget.perDayUSD"),
     },
     nativeFallback: src.nativeFallback ?? DEFAULTS.nativeFallback,
     protectTools: Array.isArray(src.protectTools) ? src.protectTools.map(String) : [],

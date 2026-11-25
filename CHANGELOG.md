@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0 (2026-11-25), development release
+
+- Shared accounting file with an exclusive lock, so no updates are lost across projects or processes. Atomic budget reservations with release on completion or failure and recovery from abandoned reservations; mode 600; numbers only.
+- Per-session statistics persist across plugin reloads and restarts: evaluations, applied, dry-run and failed runs, tokens removed, requests pruned, Jev tokens and cost, last successful evaluation, native compactions, resets, and coding-model and cache usage. The TUI, Desktop, `/jev-stats` and CLI read the same source.
+- Optional spending limits: `budget.perDayUSD` and `budget.perSessionUSD` accept `null` for unlimited. Defaults are unchanged; spend is always tracked.
+- Per-session mode overrides: `/jev-session-enable`, `/jev-session-dry-run`, `/jev-session-disable`, `/jev-session-inherit`. They persist and never affect other sessions; the config kill switch still wins. Indicators show the mode's source.
+- Status text and indicators now show `Unlimited` limits and the global and session modes separately.
+
 ## 0.1.0 (2026-11-25), initial development release
 
 First OpenCode port of [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction) (upstream `e3f262a`).
