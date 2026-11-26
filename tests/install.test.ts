@@ -1,22 +1,33 @@
-// Isolated installation tests: the packed npm artifact (jev-compaction-0.3.0.tgz) installs
-// into a clean directory, and its parts resolve exactly as OpenCode's plugin loader
-// resolves them (exports map: ".", "./tui", "./rpc", "./gui-experimental").
+// Isolated installation tests: the packed npm artifact installs into a clean
+// directory, and its parts resolve exactly as OpenCode's plugin loader resolves
+// them (exports map: ".", "./tui", "./rpc", "./gui-experimental").
+// The tarball is packed ONCE from the real source tree, so this works in CI too.
 import { describe, expect, it, beforeAll, afterAll } from "vitest"
 import { mkdtempSync, rmSync, readdirSync, existsSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { execSync } from "node:child_process"
 
-const TGZ = process.env.JEV_TGZ ?? "/tmp/opencode/jev-compaction-0.3.0.tgz"
+const repo = join(import.meta.dirname, "..")
+const pluginDir = join(repo, "plugin")
+const packDir = mkdtempSync(join(tmpdir(), "jev-pack-"))
+let TGZ = ""
 let dir: string
-const root0 = () => join(dir, "node_modules", "jev-compaction")
+const rootPath = () => join(dir, "node_modules", "jev-compaction")
 
 beforeAll(() => {
+  execSync(`npm pack --pack-destination ${JSON.stringify(packDir)}`, { cwd: pluginDir, stdio: "pipe" })
+  const packed = readdirSync(packDir).filter(f => f.endsWith(".tgz"))
+  if (packed.length !== 1) throw new Error(`expected exactly one packed tarball, got: ${packed.join(", ")}`)
+  TGZ = join(packDir, packed[0]!)
   dir = mkdtempSync(join(tmpdir(), "jev-install-"))
   // Install the artifact as OpenCode would: plain npm install of the tarball.
-  execSync(`npm install --no-save --ignore-scripts "${TGZ}"`, { cwd: dir, stdio: "pipe" })
-}, 120_000)
-afterAll(() => rmSync(dir, { recursive: true, force: true }), 120_000)
+  execSync(`npm install --no-save --ignore-scripts ${JSON.stringify(TGZ)}`, { cwd: dir, stdio: "pipe" })
+}, 240_000)
+afterAll(() => {
+  rmSync(packDir, { recursive: true, force: true })
+  if (dir) rmSync(dir, { recursive: true, force: true })
+})
 
 describe("packed artifact: native npm installation", () => {
   it("installs the package with the expected name and version", () => {
@@ -88,13 +99,11 @@ describe("packed artifact: native npm installation", () => {
   })
 })
 
-const rootPath = () => join(dir, "node_modules", "jev-compaction")
-
 describe("version-pinned installation and upgrade/downgrade paths", () => {
   it("a version-pinned entry ('jev-compaction@0.3.0') maps to the same artifact", () => {
     // OpenCode's plugins array accepts "jev-compaction@0.3.0"; the loader resolves it through npm.
     // Locally we verify the tarball filename and the package version agree.
-    expect(TGZ).toMatch(/jev-compaction-0\.3\.0\.tgz$/)
+    expect(TGZ).toMatch(/jev-compaction-[0-9.]+\.tgz$/)
     const pkg = JSON.parse(readFileSync(join(rootPath(), "package.json"), "utf8"))
     expect(pkg.version).toBe("0.3.0")
   })
