@@ -190,7 +190,14 @@ export function goalFromMessages(messages: readonly Message[]): string {
  * are abridged oldest-first (pinned messages last), then old messages collapse
  * to a one-line note, then old tool calls shrink to one line each, then old
  * messages that carry no call are left out, then runs of old call-only
- * messages are folded into one entry. Throws when even that is too big.
+ * messages are folded into one entry.
+ *
+ * When even that cannot fit (very long sessions), the state becomes a bounded
+ * window: the first message, the oldest not-yet-collapsed entries up to the
+ * budget (one-line form), an omission marker, and the pinned tail. Everything
+ * older is simply not represented this run; calls there remain candidates for
+ * later runs, so nothing is starved. Throws only when not even the pinned
+ * tail plus the first message fit.
  */
 export function fitState(
   messages: readonly Message[],
@@ -298,7 +305,90 @@ export function fitState(
   tokens = baseTokens + perEntry.reduce((sum, n) => sum + n, 0);
   if (fits()) return fitted(history, tokens, 'old calls merged');
 
+  // Bounded window (long sessions): first entry, the oldest candidate-bearing entries
+  // up to the budget, an omission marker, then the pinned tail. Prioritising entries
+  // that carry un-decided calls guarantees forward progress: every run asks about
+  // some calls that were never asked before, until none remain outside the tail.
+  const markerTokens = estimateTokens(
+    JSON.stringify({ i: 0, role: 'user' as const, text: OMITTED_MARKER }),
+  );
+  const tailIndices: number[] = [];
+  for (let i = 0; i < history.length; i++) if (pinned(history[i]!)) tailIndices.push(i);
+  const tailTokens = tailIndices.reduce((sum, i) => sum + (perEntry[i] ?? 0), 0);
+  const first = history[0];
+  const firstTokens = first ? perEntry[0] ?? 0 : 0;
+  const budget = options.maxStateTokens - baseTokens - firstTokens - tailTokens - markerTokens;
+  if (budget > 0) {
+    // Two passes over the non-pinned entries, oldest first within each: entries that
+    // carry candidate calls first (guaranteed progress), then everything else.
+    const tail = new Set(tailIndices);
+    const candidateMessages = new Set<number>();
+    for (const call of calls) {
+      if (call.pinned) continue;
+      candidateMessages.add(call.callIndex);
+      candidateMessages.add(call.resultIndex);
+    }
+    const carriesCandidate = (i: number): boolean => {
+      const entry = history[i]!;
+      return candidateMessages.has(entry.i);
+    };
+    const prioritised: number[] = [];
+    const rest: number[] = [];
+    for (let i = 0; i < history.length; i++) {
+      if (i === 0 || tail.has(i)) continue;
+      (carriesCandidate(i) ? prioritised : rest).push(i);
+    }
+    const chosen = new Set<number>();
+    let used = 0;
+    let omitted = false;
+    for (const i of prioritised) {
+      const cost = perEntry[i] ?? 0;
+      if (used + cost > budget) (omitted = true);
+      else (used += cost), chosen.add(i);
+    }
+    for (const i of rest) {
+      const cost = perEntry[i] ?? 0;
+      if (used + cost > budget) (omitted = true);
+      else (used += cost), chosen.add(i);
+    }
+    const window: HistoryEntry[] = [];
+    for (let i = 0; i < history.length; i++) {
+      if (i === 0 && first) {
+        window.push({ ...first });
+        continue;
+      }
+      if (chosen.has(i) || tail.has(i)) {
+        if (omitted && !window.some((e) => e.i === -1) && tail.has(i)) {
+          window.push({ i: -1, role: 'user', text: OMITTED_MARKER });
+        }
+        window.push({ ...history[i]! });
+      }
+    }
+    if (omitted && !window.some((e) => e.i === -1)) {
+      window.push({ i: -1, role: 'user', text: OMITTED_MARKER });
+    }
+    const windowTokens = baseTokens + firstTokens + used + markerTokens + tailTokens;
+    return fitted(window, windowTokens, 'bounded window');
+  }
+
   throw new Error(
     `history too large for Jev (~${tokens} tokens after truncation, limit ${options.maxStateTokens})`,
   );
 }
+
+/** Marker inserted where older history is left out of a bounded state window. */
+const OMITTED_MARKER = '[earlier history omitted from this evaluation; ask about these calls in later runs]';
+
+/** Short call ids (`t1`, ...) whose entries are represented in a fitted state history. */
+export function visibleCallIds(state: CompactionState): Set<string> {
+  const visible = new Set<string>();
+  for (const entry of state.history) {
+    if (!Array.isArray(entry.tool_calls)) continue;
+    for (const call of entry.tool_calls) {
+      if (typeof call === 'string') visible.add(call.split(' ')[0] ?? '');
+      else visible.add(call.id);
+    }
+  }
+  return visible;
+}
+

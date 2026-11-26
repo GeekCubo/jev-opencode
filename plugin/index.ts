@@ -429,9 +429,10 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
           })
           s.lastEvaluationAt = now()
           if (config.logDecisions)
-            log("info", `session ${sessionID}: ${out.result.decisions.filter((d) => d.reason !== "pinned").map((d) => `${d.id}:${d.tool}:${d.action}`).join(" ")}`)
+            log("info", `session ${sessionID}: ${out.result.decisions.filter((d) => d.reason !== "pinned" && d.reason !== "windowed_out").map((d) => `${d.id}:${d.tool}:${d.action}`).join(" ")}`)
           const evaluated = new Set(s.decisions?.evaluated ?? [])
-          const askedIds = new Set(out.result.decisions.filter((d) => d.reason !== "pinned").map((d) => d.id))
+          // 'windowed_out' decisions were never asked (bounded state window): they stay candidates.
+          const askedIds = new Set(out.result.decisions.filter((d) => d.reason !== "pinned" && d.reason !== "windowed_out").map((d) => d.id))
           for (const c of out.calls) if (askedIds.has(c.id)) evaluated.add(c.tool_use_id)
           const sufficient = out.ratio >= config.minReductionRatio
           if (sessionMode === "dry-run") {

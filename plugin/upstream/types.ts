@@ -60,9 +60,13 @@ export interface CallDecision extends CallAnswer {
   id: string;
   tool: string;
   action: CallAction;
-  reason: 'pinned' | 'kept' | 'result_dropped' | 'call_dropped';
+  /**
+   * 'windowed_out': not asked this run because the bounded evaluation state
+   * could not include it (very long sessions). The call stays untouched and
+   * remains a candidate for later runs.
+   */
+  reason: 'pinned' | 'kept' | 'result_dropped' | 'call_dropped' | 'windowed_out';
 }
-
 export interface HistoryToolCall {
   id: string;
   tool: string;

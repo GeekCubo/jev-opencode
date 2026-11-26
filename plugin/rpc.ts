@@ -84,9 +84,9 @@ export interface JevSessionSnapshot {
   tokensRemovedFromRequestsEstimated: number
   nativeCompactions: number
   resets: number
-  /** Estimated (character-based) tokens removed from outgoing requests so far. */
+  /** Cumulative estimated tokens removed from outgoing requests (per-request accounting, not proven savings). */
   tokensRemovedEstimated: number
-  /** Estimated context reduction of the last evaluations, 0–100. */
+  /** Estimated context reduction of the last evaluation snapshots, 0–100 (not the primary model's context). */
   reductionPctEstimated: number
   /** Jev input tokens as reported by the TypeSafe API. */
   jevTokensMeasured: number

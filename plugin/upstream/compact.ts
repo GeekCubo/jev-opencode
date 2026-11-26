@@ -1,5 +1,5 @@
 import { noulAnswer } from './request.ts';
-import { collectToolCalls, estimateTokens, fitState } from './state.ts';
+import { collectToolCalls, estimateTokens, fitState, visibleCallIds } from './state.ts';
 import type {
   CallAnswer,
   CallDecision,
@@ -270,10 +270,17 @@ export async function compact(
   let fitted: { tokens: number; stage: string } = { tokens: 0, stage: '' };
   let batches: ToolCall[][] = [];
   const answers = new Map<string, CallAnswer>();
+  let windowed: ToolCall[] | undefined;
   if (candidates.length > 0) {
     const state = fitState(messages, calls, resolved);
     fitted = state;
-    batches = batchCalls(candidates, state.tokens, resolved);
+    if (state.stage === 'bounded window') {
+      // Only calls represented in the state window are asked about this run; the
+      // rest stay candidates for later runs (nothing is dropped or starved).
+      const visible = visibleCallIds(state.state);
+      windowed = candidates.filter((call) => visible.has(call.id));
+    }
+    batches = batchCalls(windowed ?? candidates, state.tokens, resolved);
     const answered = await Promise.all(
       batches.map((batch) => askBatch(asker, state.state, batch)),
     );
@@ -283,6 +290,14 @@ export async function compact(
   const decisions = calls.map((call) =>
     decideCall(call, answers.get(call.id) ?? { keepCall: 1, keepResult: 1 }, resolved),
   );
+  if (windowed) {
+    // Calls outside the bounded state window were never asked: keep them untouched
+    // (a plain 'keep') but flag them so callers do not treat them as evaluated.
+    const inWindow = new Set(windowed.map((call) => call.id));
+    for (const decision of decisions) {
+      if (!inWindow.has(decision.id) && decision.reason === 'kept') decision.reason = 'windowed_out';
+    }
+  }
   const kept = applyDecisions(
     messages,
     decisions,
@@ -298,7 +313,7 @@ export async function compact(
       charsBefore,
       charsAfter: kept.reduce((sum, message) => sum + messageChars(message), 0),
       calls: calls.length,
-      kept: count(decisions, 'kept'),
+      kept: count(decisions, 'kept') + count(decisions, 'windowed_out'),
       resultsDropped: count(decisions, 'result_dropped'),
       callsDropped: count(decisions, 'call_dropped'),
       pinned: count(decisions, 'pinned'),

@@ -9,7 +9,14 @@ Local modifications (OpenCode port):
 
 - `types.ts`: added optional `CompactOptions.isProtected`.
 - `compact.ts`: `compact()` pins calls for which `isProtected` returns true;
-  `truncatedResultText` is exported.
+  `truncatedResultText` is exported. When the fitted state is a bounded
+  window (`stage === 'bounded window'`), only calls represented in the
+  window are asked about; the rest stay candidates for later runs.
+- `state.ts`: `fitState()` gained a final `bounded window` stage for very
+  long sessions whose collapsed history still exceeds `maxStateTokens`
+  (upstream throws there). The window keeps the first entry, the oldest
+  entries that fit the budget in one-line form, an omission marker and the
+  pinned tail; `visibleCallIds()` exposes the call ids it contains.
 - Relative import specifiers changed from `./x.js` to `./x.ts` so OpenCode loads the sources directly.
 
 Everything else is verbatim.

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.3 (2026-11-26), development release
+
+- Fixed: long sessions whose collapsed evaluation history exceeds `maxStateTokens` (upstream: "history too large for Jev") could never be evaluated; Jev fell back to native compaction forever. `fitState` now ends in a `bounded window` stage: the state keeps the first entry, the oldest entries carrying undecided candidate calls (up to the token budget), an omission marker, and the pinned recent tail. `compact()` asks only about calls represented in the window; the rest are flagged `windowed_out` — kept untouched, never marked evaluated — so later runs evaluate them (guaranteed forward progress). Sessions that fit the ordinary stages are unaffected; the pinned-tail-only failure still throws (fail-open unchanged).
+- Diagnostics: `/jev-stats` now labels the per-run context figures as evaluation snapshots (not the primary model's context) and the cumulative removed tokens as per-request accounting rather than proven savings.
+- Tests: bounded-window unit tests, a 60k/150k/300k/550k-token matrix through `compact()` with mocked Jev, plugin-level large-session, multi-run drain, API-failure fallback and native-compaction regression tests.
+
 ## 0.2.2 (2026-11-25), development release
 
 - The plugin version is shown in `/jev-status`, `/jev-stats`, the TUI sidebar, the Desktop pill (Version row), the snapshot (`version`) and the CLI. It is read from the plugin's own `package.json`.
