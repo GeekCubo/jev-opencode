@@ -1,5 +1,5 @@
 /**
- * Session health assessment (0.2.4). Pure local computation from existing Jev
+ * Session health assessment (0.3.0). Pure local computation from existing Jev
  * diagnostics — no inference requests, no state changes, no I/O.
  *
  * Two token spaces are kept strictly separate:

@@ -181,6 +181,35 @@ export const JevRpc = Rpc.define({
     },
     /** Drains one pending session health notification message (empty when none). */
     drainNotification: { input: sessionInput, output: textOutput },
+    /**
+     * Optional agent-configuration assistant (provider-independent, local only).
+     * `preset` selects the recommendation set; `apply` (assignments) writes the
+     * configuration after explicit approval, with a timestamped backup.
+     */
+    setupPlan: {
+      input: {
+        type: "object",
+        properties: {
+          preset: { type: "string", enum: ["quality", "balanced", "economy"] },
+          overrides: { type: "object", additionalProperties: { type: "string" } },
+        },
+        required: ["preset"],
+        additionalProperties: false,
+      },
+      output: textOutput,
+    },
+    setupApply: {
+      input: {
+        type: "object",
+        properties: {
+          assignments: { type: "object", additionalProperties: { type: "string" } },
+          skipUnassigned: { type: "boolean" },
+        },
+        required: ["assignments"],
+        additionalProperties: false,
+      },
+      output: textOutput,
+    },
   },
   events: {
     /** Jev state changed (mode, evaluation started/finished, reset, budget). Clients re-read `snapshot`. */

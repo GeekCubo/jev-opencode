@@ -18,6 +18,8 @@ import { add, emptyCounters, formatStats, type Counters } from "./statistics.ts"
 import { FileLedger, reservedFor, session as session$ } from "./ledger-file.ts"
 import { JevRpc, TRIGGER_LABEL, type JevSnapshot, type TriggerDiagnostics, type TriggerReason, type SessionHealthSnapshot } from "./rpc.ts"
 import { assessHealth, healthThresholdsFromConfig, healthNotifyMessage, healthShouldNotify, newNotifyState, recordNotify, resetNotifyState, HEALTH_LABEL, type HealthInput, type HealthLevel, type HealthResult, type NotifyState } from "./health.ts"
+import { catalog, currentAssignments, applyAgentAssignments, recommendAll, ROLE_LABEL, type Role } from "./setup.ts"
+import { configDir } from "./util.ts"
 import { errorMessage, estimateTokens, hash, ledgerPath, PLUGIN_VERSION, statsSnapshotPath } from "./util.ts"
 import { mkdir, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
@@ -807,6 +809,8 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
       }
       const noSession = "No session yet: open or start a session first (this command acts on the current session)."
       const unknown = (what: string) => `unavailable — ${what}`
+      /** The user's global OpenCode configuration, edited only by the explicitly-approved setup flow. */
+      const globalConfigPath = process.env.OPENCODE_CONFIG ?? configDir() + "/opencode.jsonc"
 
       /** Live trigger diagnostics; cooldown is recomputed so it counts down between requests. */
       const triggerView = (sessionID: string, stored?: Record<string, unknown>): TriggerDiagnostics | null => {
@@ -1110,6 +1114,52 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
           if (msg !== undefined) healthNotifyQueue.delete(sessionID)
           return msg ?? null
         },
+        /**
+         * /jev-setup step 1: local recommendation preview for a preset. Reads the model catalogue
+         * and the user's current assignments; makes no changes and no requests. When overrides are
+         * supplied, they replace the recommendation for those roles (custom preset).
+         */
+        setupPlan: async (preset: "quality" | "balanced" | "economy", overrides?: Record<string, string>) => {
+          const models = await catalog(ctx)
+          const current = currentAssignments(globalConfigPath)
+          const recs = recommendAll(models, preset, current)
+          const lines = [
+            `Jev agent configuration preview (${preset}; NOTHING has been changed)`,
+            `  Configuration file: ${globalConfigPath}`,
+            `  Models available: ${models.length} (${models.filter(m => m.inputPrice !== null).length} with known pricing)`,
+            "",
+            "  Role | Current model | Recommended | Provider | Price | Reason",
+          ]
+          for (const r of recs) {
+            const override = overrides?.[r.role]
+            const chosen = override ?? r.model
+            const price = r.priceKnown ? "known" : "unknown"
+            lines.push(`  ${ROLE_LABEL[r.role]}: ${current[r.role] ?? "(unset)"} → ${chosen ?? "(no suitable model)"} ${r.priceKnown ? "" : "(price unknown)"} — ${override ? "your override" : r.reason}`)
+            void price
+          }
+          lines.push(
+            "",
+            "  Existing instructions, permissions and every other agent key are preserved; only `model` changes.",
+            "  Review the preview, override any role (custom), then apply with setupApply for the approved assignments.",
+            "  Applying creates a timestamped backup first and shows the rollback path.",
+          )
+          return lines.join("\n")
+        },
+        /** /jev-setup step 2: apply EXPLICITLY approved assignments (backup first, atomic write). */
+        setupApply: async (assignments: Record<string, string>, skipUnassigned?: boolean) => {
+          try {
+            const edit = applyAgentAssignments(globalConfigPath, assignments as Partial<Record<Role, string>>, { skipUnassigned })
+            return [
+              "Applied. OpenCode reloads configuration automatically (no restart needed).",
+              ...edit.changes.map(c => `  ${c}`),
+              `  Backup: ${edit.backupPath}`,
+              `  Rollback: copy the backup over ${globalConfigPath}`,
+              "  IMPORTANT: verify with /jev-status and your next session that agents work as expected.",
+            ].join("\n")
+          } catch (e) {
+            return `Not applied: ${(e as Error).message}\n  Your configuration is unchanged; the backup was not needed.`
+          }
+        },
       }
 
       // RPC powers the TUI/GUI commands and indicators; without it pruning still works and the CLI reader remains.
@@ -1126,6 +1176,8 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
         setSessionMode: async (input: any) => ({ text: await actions.setSessionMode(input.sessionID, input.mode) }),
         reset: async (input: any) => ({ text: actions.reset(input.sessionID) }),
         compact: async (input: any) => ({ text: actions.compact(input.sessionID) }),
+        setupPlan: async (input: any) => ({ text: await actions.setupPlan(input.preset, input.overrides) }),
+        setupApply: async (input: any) => ({ text: await actions.setupApply(input.assignments, input.skipUnassigned) }),
       })
       emitChanged = (sessionID?: string) =>
         void (registration as any)?.events?.emit?.("changed", sessionID ? { sessionID } : {})?.catch?.(() => {})

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0 (2026-11-26), release candidate
+
+- Public installation: the plugin directory is now a publishable npm package (`jev-compaction`) with the exports map, `files` list and versioned metadata OpenCode's plugin loader resolves (`plugins: ["jev-compaction"]`); the prebuilt Desktop GUI bundle ships in `dist/`.
+- Added: `/jev-setup`, an optional, provider-independent agent-configuration assistant — local, deterministic model recommendations (capabilities and known pricing only; unknown stays unknown), quality/balanced/economy presets plus custom overrides, explicit preview and approval, timestamped unique backups and atomic writes with rollback instructions. The default is **keep my existing configuration**; nothing changes without explicit approval, and Jev works fully without it.
+- Added: `scripts/jev-activate.sh` / `scripts/jev-rollback.sh` — corrected local activation (the 0.2.4 script's `mv`-into-existing-directory defect installed nothing while reporting success). The new script validates the staged package and runtime files, installs by swap, verifies the *installed* version and file integrity, never overwrites backups, and rolls back on failure; nonzero exit on any failure.
+- Budget accounting: reservations are per attempt (retries re-reserve), released after every attempt; measured usage is only recorded from successful responses, so transport failures leave usage unknown (charged conservatively at the estimate, never reported as measured). The local budget is a conservative estimate, not a guaranteed provider-side spending ceiling.
+- Partial evaluation failures: a failed run (including partial batch failure) marks nothing evaluated; every undecided candidate stays eligible and is re-asked after the endpoint heals — no starvation, no unbounded retries.
+- Diagnostics: logical batches vs network attempts vs retries are reported separately; retry attempts are not included in the 11-request worst-case run bound (documented).
+- Tests: focused acceptance suites for budget/retry accounting (A1/A3), partial-failure lifecycle (A2), context-measurement separation (A4), the setup assistant (provider fixtures, presets, backup/rollback), the packed npm artifact (native install, contents, leak checks) and isolated activation/rollback (including the 0.2.4 defect scenario).
+
 ## 0.2.4 (2026-11-26), development release
 
 - Added: session health monitoring (advisory only; Jev never compacts, resets or closes sessions automatically). Four levels — Healthy / Growing / Compaction recommended / New session recommended — computed locally from provider-reported or estimated primary context, the model's context window (utilisation), Jev evaluation-state size, eligibility, recent reduction effectiveness, consecutive failures/insufficient reductions and native-compaction history. Adaptive thresholds: absolute advisory defaults (100k/200k/300k/500k) scaled down for small model windows (25%/50%/75% of the window); optional overrides via `health` in the existing plugin options.

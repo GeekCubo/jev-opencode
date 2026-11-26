@@ -4,7 +4,7 @@ An optional plugin for [OpenCode](https://opencode.ai) 2.2.7 that trims stale to
 
 It does not replace your coding model or provider, and it does not make coding-model access free. Jev evaluations are a separate paid service.
 
-> Status: **0.1.0, development release.** Tested on OpenCode 2.2.7 only. Real-world cost savings have not been measured yet (see [Benchmarks](#benchmarks)).
+> Status: **0.3.0, release candidate.** Tested on OpenCode 2.2.7 only. Real-world cost savings have not been measured yet (see [Benchmarks](#benchmarks)).
 
 This is an OpenCode port of [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction) (MIT, by GitHub user `tamaratran`), originally a Claude Code plugin. GeekCubo maintains this port. It is not affiliated with, or endorsed by, TypeSafe or the OpenCode project.
 
@@ -47,9 +47,36 @@ Synthetic demo sessions with a mock coding model. TUI images are rendered from e
 Requirements:
 - OpenCode 2.2.7 (TUI and/or Desktop).
 - A TypeSafe account and API key.
-- Git.
 
-No npm package has been published; install from a checkout.
+### Native npm installation (once published)
+
+The plugin is a standard npm package (`jev-compaction`). After publication:
+
+```sh
+# 1. Store your TypeSafe key in a file readable only by you (never in opencode.jsonc).
+umask 077
+printf '%s' 'YOUR_TYPESAFE_KEY' > ~/.config/opencode/typesafe-api-key
+```
+
+2. Add the plugin to `~/.config/opencode/opencode.jsonc`:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "jev-compaction", // or "jev-compaction@0.3.0" for a pinned version
+      "options": { "mode": "dry-run" }
+    }
+  ]
+}
+```
+
+OpenCode installs the package itself through its normal plugin-loading mechanism — no cloning, no build step, no background service. The prebuilt Desktop bundle (`dist/gui-experimental.cjs`) is included in the package.
+
+> Until the package is published to npm, install from a checkout instead (below). Both methods are identical after installation.
+
+### Installation from a checkout (pre-publication)
 
 ```sh
 # 1. Get the plugin. Any location outside ~/.config/opencode/plugins works; that folder auto-loads plugins.
@@ -171,6 +198,9 @@ All options go in `options` of the plugin entry. Invalid options disable the plu
 | `/jev-session-dry-run` | Dry-run for the current session only | yes |
 | `/jev-session-disable` | Off for the current session only (unpruned requests, no Jev requests) | yes |
 | `/jev-session-inherit` | Remove the current session's override; it follows the global mode again | yes |
+| `/jev-health` | Concise session health report (local only; no requests) | no (more detail in a session) |
+| `/jev-handover` | Continuation summary for a fresh session (local records only; no requests) | yes |
+| `/jev-setup` | Optional agent-configuration assistant: preview recommendations, approve explicit changes (backup first) | no |
 
 - **Without a session.** Session commands run outside a session show a warning and do nothing.
 - **No conversation side effects.** Commands never call a model or Jev and never add messages to the conversation.
@@ -315,8 +345,54 @@ No A/B comparison on real coding tasks has been completed, so there is no eviden
 - **Negative reduction statistics are unresolved.** Some sessions have shown negative estimated reduction figures in the statistics. The cause has not been investigated; treat the reduction and "tokens removed" figures as indicative only.
 - **Trigger lag.** The provider-reported context lags one step, and a session's first request uses the message estimate, so an evaluation can start one step later than the threshold would suggest. The protocol is in [benchmarks/README.md](benchmarks/README.md).
 
+## Optional agent configuration (/jev-setup)
+
+Jev's context optimization and session health work without any agent changes. The default is **keep my existing configuration** — installing Jev never modifies your agents, models, providers or delegation behavior.
+
+`/jev-setup` is an optional, provider-independent assistant for choosing models for agent roles (Build, Plan, Builder, Reviewer, General, Explore):
+
+- **Local only.** It reads the model catalogue OpenCode already exposes (capabilities, context limits, published pricing). It never makes inference requests and never probes providers.
+- **Deterministic.** Recommendations use tool support, reasoning capability, context size and known pricing — never display names, and never guessed prices or capabilities. Unknown metadata is reported as unknown.
+- **Presets.** Keep (default), Maximum quality, Balanced, Economy, or Custom per-role overrides. With a single provider or a single model it works within what you have and says so — cheaper delegation is simply unavailable, and it does not claim savings from assigning the same model to more agents.
+- **Explicit approval.** You see a preview (current model → recommended model, per role, with reasons and known/unknown pricing) before anything changes. Applying creates a unique timestamped backup of your configuration, changes only the `agent.<role>.model` field of approved roles (every other agent key — permissions, instructions, mode — is preserved), and shows the rollback path.
+
+Mixed-provider configurations can assign different providers to different roles; single-provider setups are never asked to add another. The assistant never changes provider routing, authentication or credentials.
+
+## Session health and handover
+
+Session health is computed locally from context size, model window utilization, Jev evaluation-state size, recent reduction effectiveness, consecutive failures and native-compaction history — no inference requests. Levels: Healthy, Growing, Compaction recommended, New session recommended. Recommendations are advisory: Jev never terminates, resets or compacts a session automatically.
+
+`/jev-health` prints a concise report. `/jev-handover` prepares a continuation summary from local records; it is honest about facts it cannot see (Git state, completed work, architectural decisions must be added by you — the plugin cannot recover them).
+
+## Privacy and data flow
+
+Jev's evaluation backend is remote: to score which old tool results can be dropped, the plugin sends the Jev evaluation state — your conversation in a compacted form: tool calls with their inputs (truncated), one-line notes representing tool results, and conversation text (abridged for very long sessions) — plus the current goal, to the configured endpoint (TypeSafe Direct or OpenCode Zen) with your TypeSafe API key. What is sent is exactly the state shown in the diagnostics; tool *results* are never sent in full (only size notes). Conversation history itself is stored only by OpenCode and is never modified.
+
+The agent-configuration assistant and session health are entirely local and send nothing. Credentials are read from the key file at request time and never logged, included in diagnostics, or sent anywhere other than the Jev endpoint's authorization header.
+
+## AI-assisted installation
+
+Copy this prompt to OpenCode (or another coding agent) to install Jev for you:
+
+```text
+Read the official Jev Compaction for OpenCode installation instructions at
+https://github.com/GeekCubo/jev-opencode (README: "Quick start"). Then:
+1. Inspect my existing OpenCode configuration (~/.config/opencode/opencode.jsonc and any
+   project opencode.json) WITHOUT changing it: providers, credentials, agents, permissions,
+   other plugins.
+2. Install Jev using the documented method (npm package "jev-compaction" once published, or a
+   local checkout before publication). Do not clone into ~/.config/opencode/plugins.
+3. Configure the TypeSafe API key in ~/.config/opencode/typesafe-api-key (mode 600). Ask me for
+   the key; never write it into opencode.jsonc or any other file.
+4. Add the plugin to my global config with mode "dry-run", preserving everything else in the
+   file, including comments if present.
+5. Verify: /jev-status shows the Jev version and dry-run mode.
+6. Optionally offer the agent-configuration assistant (/jev-setup) SEPARATELY, and only change
+   agent assignments with my explicit approval after showing a preview and creating a backup.
+```
+
 ## Credits and license
 
-- **Original project.** [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction), the Claude Code plugin and pruning algorithm, by GitHub user `tamaratran`. MIT license. The adapted source is in `plugin/upstream/` with its licence and change notes.
+- **Original project.** [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction), the Claude Code plugin and pruning algorithm, by GitHub user `tamaratran`. MIT license. The adapted source is in `plugin/upstream/` with its license and change notes.
 - **OpenCode port.** Maintained by [GeekCubo](https://geekcubo.com). MIT license (see [LICENSE](LICENSE) and [NOTICE](NOTICE)).
 - **Jev** is TypeSafe's proprietary evaluation model and API. **OpenCode** is an independent project. Neither is owned by or affiliated with GeekCubo.

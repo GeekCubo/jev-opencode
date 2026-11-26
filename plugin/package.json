@@ -1,6 +1,7 @@
 {
   "name": "jev-compaction",
-  "private": true,
+  "version": "0.3.0",
+  "description": "Jev Compaction for OpenCode: automatic context optimization, session health and optional agent configuration, using the TypeSafe Jev evaluation model.",
   "type": "module",
   "license": "MIT",
   "exports": {
@@ -9,10 +10,10 @@
     "./rpc": "./rpc.ts",
     "./gui-experimental": "./dist/gui-experimental.cjs"
   },
+  "files": ["index.ts", "jev.ts", "compaction.ts", "config.ts", "health.ts", "setup.ts", "ledger-file.ts", "rpc.ts", "statistics.ts", "tui.tsx", "ui-core.ts", "util.ts", "upstream", "dist"],
   "peerDependencies": {
     "@opentui/core": ">=0.8.1",
     "@opentui/solid": ">=0.8.1",
     "solid-js": ">=1.9.0"
-  },
-  "version": "0.2.4"
+  }
 }

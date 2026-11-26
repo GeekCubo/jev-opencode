@@ -20,6 +20,8 @@ export interface JevClient {
   health(input: { sessionID?: string }): Promise<{ text: string }>
   handover(input: { sessionID: string }): Promise<{ text: string }>
   drainNotification(input: { sessionID?: string }): Promise<{ text: string }>
+  setupPlan(input: { preset: "quality" | "balanced" | "economy"; overrides?: Record<string, string> }): Promise<{ text: string }>
+  setupApply(input: { assignments: Record<string, string>; skipUnassigned?: boolean }): Promise<{ text: string }>
 }
 
 export type Tone = "info" | "success" | "warning" | "error"
@@ -63,6 +65,16 @@ export function jevCommandList(host: UiHost): JevCommand[] {
     })
   return [
     { name: "jev-status", title: "Jev: status", run: guard(async () => host.show("Jev status", (await host.rpc().status({ sessionID: host.sessionID() })).text)) },
+    {
+      name: "jev-setup",
+      title: "Jev: optional agent configuration (preview before any change; nothing is modified without approval)",
+      run: guard(async () => {
+        const rpc = host.rpc()
+        // Step 1: show the current state and the preset menu; nothing is modified.
+        const plan = await rpc.setupPlan({ preset: "balanced" })
+        host.show("Jev setup (nothing changed yet)", plan.text + "\n\nRe-run with a preset choice to preview recommendations:\n  /jev-setup quality | balanced | economy\nApprove explicit changes only after reviewing the preview. The default is to keep your existing configuration.")
+      }),
+    },
     { name: "jev-health", title: "Jev: session health report", run: guard(async () => host.show("Session health", (await host.rpc().health({ sessionID: host.sessionID() })).text)) },
     { name: "jev-handover", title: "Jev: prepare a handover summary for a fresh session", run: perSession("jev-handover", (sessionID) => host.rpc().handover({ sessionID })) },
     { name: "jev-stats", title: "Jev: statistics", run: guard(async () => host.show("Jev statistics", (await host.rpc().stats({ sessionID: host.sessionID() })).text)) },

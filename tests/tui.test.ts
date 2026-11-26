@@ -14,17 +14,17 @@ function fake(sessionID: string | undefined, rpcImpl: Record<string, Function>) 
   return { cmds, notes, shown }
 }
 const ok = (text: string) => vi.fn(async () => ({ text }))
-const rpc = () => ({ status: ok("mode=active"), stats: ok("Jev runs: 0"), setMode: ok("Active: ..."), reset: ok("Restored 2"), compact: ok("Jev will evaluate"), setSessionMode: ok("This session only"), health: ok("Session health: Healthy"), handover: ok("Jev handover summary"), drainNotification: ok(""), snapshot: vi.fn() })
+const rpc = () => ({ status: ok("mode=active"), stats: ok("Jev runs: 0"), setMode: ok("Active: ..."), reset: ok("Restored 2"), compact: ok("Jev will evaluate"), setSessionMode: ok("This session only"), health: ok("Session health: Healthy"), handover: ok("Jev handover summary"), drainNotification: ok(""), setupPlan: ok("Jev agent configuration preview"), setupApply: ok("Applied."), snapshot: vi.fn() })
 
 describe("shared command layer (TUI and Desktop GUI)", () => {
-  it("registers the global, health and session-override commands", () => {
-    expect(Object.keys(fake(undefined, rpc()).cmds).sort()).toEqual(["jev-compact", "jev-disable", "jev-dry-run", "jev-enable", "jev-handover", "jev-health", "jev-reset", "jev-session-disable", "jev-session-dry-run", "jev-session-enable", "jev-session-inherit", "jev-stats", "jev-status"])
+  it("registers the global, health, setup and session-override commands", () => {
+    expect(Object.keys(fake(undefined, rpc()).cmds).sort()).toEqual(["jev-compact", "jev-disable", "jev-dry-run", "jev-enable", "jev-handover", "jev-health", "jev-reset", "jev-session-disable", "jev-session-dry-run", "jev-session-enable", "jev-session-inherit", "jev-setup", "jev-stats", "jev-status"])
   })
   it("welcome screen: success never throws, never shows an error, no per-session RPC", async () => {
     const r = rpc()
     const { cmds, notes, shown } = fake(undefined, r)
     for (const c of Object.values(cmds)) await expect(c.run()).resolves.toBeUndefined()
-    expect(shown.map((a) => a.title)).toEqual(["Jev status", "Session health", "Jev statistics"])
+    expect(shown.map((a) => a.title)).toEqual(["Jev status", "Jev setup (nothing changed yet)", "Session health", "Jev statistics"])
     expect(notes.every((t) => t.tone !== "error")).toBe(true)
     expect(notes.filter((t) => t.tone === "warning").map((t) => t.message).join()).toMatch(/Open a session first.*Open a session first/)
     expect(r.reset).not.toHaveBeenCalled()
