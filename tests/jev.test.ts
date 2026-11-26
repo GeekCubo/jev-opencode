@@ -185,7 +185,7 @@ describe("plugin lifecycle", () => {
   it("registers documented hooks and the RPC; no throwing server commands by default", async () => {
     const { f } = await setup()
     expect(Object.keys(f.hooks).sort()).toEqual(["compaction", "context", "generate"])
-    expect(Object.keys(f.rpc).sort()).toEqual(["compact", "reset", "setMode", "setSessionMode", "snapshot", "stats", "status"])
+    expect(Object.keys(f.rpc).sort()).toEqual(["compact", "drainNotification", "handover", "health", "reset", "setMode", "setSessionMode", "snapshot", "stats", "status"])
     expect(Object.keys(f.serverCommands)).toEqual([])
   })
 

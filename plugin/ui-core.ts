@@ -1,6 +1,13 @@
 // Client-neutral command and indicator logic shared by the TUI part (tui.tsx) and the Desktop GUI part (gui.tsx).
 // No OpenCode imports: each client adapts its own toast/dialog/session APIs to `UiHost`.
-import { TRIGGER_LABEL, type JevSnapshot } from "./rpc.ts"
+import { TRIGGER_LABEL, type JevSnapshot, type SessionHealthLevel } from "./rpc.ts"
+
+export const HEALTH_LABEL: Record<SessionHealthLevel, string> = {
+  healthy: "Healthy",
+  growing: "Growing",
+  compaction_recommended: "Compaction recommended",
+  new_session_recommended: "New session recommended",
+}
 
 export interface JevClient {
   status(input: { sessionID?: string }): Promise<{ text: string }>
@@ -10,6 +17,9 @@ export interface JevClient {
   reset(input: { sessionID: string }): Promise<{ text: string }>
   compact(input: { sessionID: string }): Promise<{ text: string }>
   setSessionMode(input: { sessionID: string; mode: "off" | "dry-run" | "active" | "inherit" }): Promise<{ text: string }>
+  health(input: { sessionID?: string }): Promise<{ text: string }>
+  handover(input: { sessionID: string }): Promise<{ text: string }>
+  drainNotification(input: { sessionID?: string }): Promise<{ text: string }>
 }
 
 export type Tone = "info" | "success" | "warning" | "error"
@@ -53,6 +63,8 @@ export function jevCommandList(host: UiHost): JevCommand[] {
     })
   return [
     { name: "jev-status", title: "Jev: status", run: guard(async () => host.show("Jev status", (await host.rpc().status({ sessionID: host.sessionID() })).text)) },
+    { name: "jev-health", title: "Jev: session health report", run: guard(async () => host.show("Session health", (await host.rpc().health({ sessionID: host.sessionID() })).text)) },
+    { name: "jev-handover", title: "Jev: prepare a handover summary for a fresh session", run: perSession("jev-handover", (sessionID) => host.rpc().handover({ sessionID })) },
     { name: "jev-stats", title: "Jev: statistics", run: guard(async () => host.show("Jev statistics", (await host.rpc().stats({ sessionID: host.sessionID() })).text)) },
     { name: "jev-enable", title: "Jev: enable active pruning (all sessions)", run: mode("active") },
     { name: "jev-dry-run", title: "Jev: dry-run mode (all sessions)", run: mode("dry-run") },
@@ -92,11 +104,21 @@ const ago = (iso: string | null, now: number) => {
 
 const limit = (n: number | null) => (n === null ? "Unlimited" : usd(n))
 
-/** One-line welcome/footer label, e.g. "Jev: Active · TypeSafe". */
+/** One-line welcome/footer label, e.g. "Jev: Active · TypeSafe · Healthy". */
 export function shortLabel(snap: JevSnapshot | undefined): string {
   if (!snap) return "Jev: Unavailable"
   const provider = snap.endpoint === "typesafe" ? "TypeSafe" : snap.endpoint === "opencode-zen" ? "OpenCode Zen" : snap.endpoint
-  return `Jev: ${STATE_LABEL[snap.state]} · ${provider}`
+  const health = snap.session?.health ? ` · ${HEALTH_LABEL[snap.session.health.level]}` : ""
+  return `Jev: ${STATE_LABEL[snap.state]} · ${provider}${health}`
+}
+
+/** Health tone for indicators: warnings/critical only for the two escalated levels. */
+export function healthTone(level: SessionHealthLevel | undefined): "success" | "warning" | "danger" | undefined {
+  if (!level) return undefined
+  if (level === "compaction_recommended") return "warning"
+  if (level === "new_session_recommended") return "danger"
+  if (level === "healthy") return "success"
+  return undefined
 }
 
 /** Compact sidebar rows. "~" marks estimates; "measured" marks API-reported values. */
@@ -116,6 +138,11 @@ export function sidebarRows(snap: JevSnapshot | undefined, now = Date.now()): Ar
     ["Last run", ago(s?.lastEvaluationAt ?? null, now)],
   ]
   const t = s?.trigger
+  if (s?.health) {
+    const h = s.health
+    rows.push(["Health", HEALTH_LABEL[h.level] + (h.utilizationPct !== null ? ` (${h.utilizationPct}% of window)` : "")])
+    if (h.level !== "healthy") rows.push(["Next", h.nextAction])
+  }
   if (t) {
     const k = (n: number) => `${Math.round(n / 1000)}k`
     rows.push(

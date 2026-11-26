@@ -16,7 +16,8 @@ import { createJevClient, resolveApiKey } from "./jev.ts"
 import { countCandidates, prune, type OcMessage, type OcPart } from "./compaction.ts"
 import { add, emptyCounters, formatStats, type Counters } from "./statistics.ts"
 import { FileLedger, reservedFor, session as session$ } from "./ledger-file.ts"
-import { JevRpc, TRIGGER_LABEL, type JevSnapshot, type TriggerDiagnostics, type TriggerReason } from "./rpc.ts"
+import { JevRpc, TRIGGER_LABEL, type JevSnapshot, type TriggerDiagnostics, type TriggerReason, type SessionHealthSnapshot } from "./rpc.ts"
+import { assessHealth, healthThresholdsFromConfig, healthNotifyMessage, healthShouldNotify, newNotifyState, recordNotify, resetNotifyState, HEALTH_LABEL, type HealthInput, type HealthLevel, type HealthResult, type NotifyState } from "./health.ts"
 import { errorMessage, estimateTokens, hash, ledgerPath, PLUGIN_VERSION, statsSnapshotPath } from "./util.ts"
 import { mkdir, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
@@ -53,6 +54,15 @@ interface SessionState {
   providerContext?: number
   providerBaseline?: number
   trigger?: TriggerDiagnostics
+  /** Session health notification bookkeeping (in memory, per session). */
+  notify?: NotifyState
+  /** Consecutive evaluation failures / insufficient reductions (health signals). */
+  consecutiveFailures: number
+  consecutiveInsufficient: number
+  /** The session's current model (provider + id), recorded on each context hook. */
+  model?: { providerID: string; id: string }
+  /** Jev evaluation-state tokens of the latest evaluation (bounded window included). */
+  lastStateTokens?: number
 }
 
 export interface Deps {
@@ -220,7 +230,7 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
       const session = (id: string): SessionState => {
         let s = sessions.get(id)
         if (!s) {
-          sessions.set(id, (s = { id, lastRunTokens: 0, lastRunAt: 0, force: false, spentUSD: 0, counters: emptyCounters(), pruneChangedAt: 0, awaitingCacheObservation: false }))
+          sessions.set(id, (s = { id, lastRunTokens: 0, lastRunAt: 0, force: false, spentUSD: 0, counters: emptyCounters(), pruneChangedAt: 0, awaitingCacheObservation: false, consecutiveFailures: 0, consecutiveInsufficient: 0, notify: newNotifyState() }))
           // After a reload, resume from the last provider-reported context instead of the message-only estimate.
           try {
             const t = ledger.read().sessions[id]?.trigger as TriggerDiagnostics | undefined
@@ -323,6 +333,7 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
             const list = await ctx.model.list()
             models = new Map(list.data.map((m: any) => [`${m.providerID}/${m.id}`, { context: m.limit?.context, input: m.cost?.[0]?.input }]))
             modelsAt = now()
+            contextWindows = new Map(list.data.filter((m: any) => m.limit?.context > 0).map((m: any) => [`${m.providerID}/${m.id}`, m.limit.context as number]))
           } catch {
             models ??= new Map()
           }
@@ -348,12 +359,52 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
       const MAX_GLOBAL_CONCURRENCY = 2
       const KEEP_ERRORS_WITHIN = 20
       const protectTools = config.protectTools.map((p) => new RegExp(p, "i"))
+      /** Advisory health thresholds: defaults, or `health` overrides via the existing plugin options. */
+      const healthThresholds = healthThresholdsFromConfig(config)
+      /** Pending health notification messages per session (rendered by clients on the `changed` event). */
+      const healthNotifyQueue = new Map<string, string>()
+      /** Session context windows per provider/model, refreshed with the model metadata. */
+      let contextWindows = new Map<string, number>()
 
       const runJev = async (sessionID: string, s: SessionState, messages: readonly OcMessage[], tokens: number, sessionMode: Mode, triggerTokens = tokens) => {
         const outcome = (reason: TriggerReason, error?: string) => {
           if (!s.trigger) return
           s.trigger.reason = reason
           if (error) (s.trigger.lastError = error), (s.trigger.lastErrorAt = new Date(now()).toISOString())
+        }
+        const healthInput = (): HealthInput => {
+          const t = s.trigger
+          const contextTokens = t?.triggerContextTokens ?? s.lastRunTokens
+          return {
+            contextTokens,
+            contextIsProviderReported: t?.providerContextTokens !== null && t?.providerContextTokens !== undefined,
+            contextWindow: s.model ? contextWindows.get(`${s.model.providerID}/${s.model.id}`) : undefined,
+            stateTokens: s.lastStateTokens,
+            maxStateTokens: config.maxStateTokens,
+            eligibleResults: t?.eligibleResults,
+            protectedResults: t?.protectedResults,
+            reductionPctEstimated: s.counters.contextTokensBefore > 0
+              ? Math.max(0, Math.round((1 - s.counters.contextTokensAfter / s.counters.contextTokensBefore) * 100))
+              : undefined,
+            insufficientReductions: s.consecutiveInsufficient,
+            evaluationFailures: s.consecutiveFailures,
+            nativeCompactions: s.counters.nativeCompactions,
+            now: now(),
+          }
+        }
+        const notifyHealth = () => {
+          const input = healthInput()
+          const result = assessHealth(input, healthThresholds)
+          if (!s.notify) s.notify = newNotifyState()
+          if (healthShouldNotify(s.notify, result.level, now())) {
+            recordNotify(s.notify, result.level, now())
+            emitChanged(sessionID)
+            // Clients (TUI toast / Desktop) render the message from the snapshot on the `changed` event.
+            healthNotifyQueue.set(sessionID, healthNotifyMessage(result.level, input))
+          } else if (s.notify.lastLevel !== result.level) {
+            recordNotify(s.notify, result.level, now())
+            emitChanged(sessionID)
+          }
         }
         if (priceError) throw new ConfigError(priceError)
         const key = await getKey()
@@ -434,23 +485,32 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
           // 'windowed_out' decisions were never asked (bounded state window): they stay candidates.
           const askedIds = new Set(out.result.decisions.filter((d) => d.reason !== "pinned" && d.reason !== "windowed_out").map((d) => d.id))
           for (const c of out.calls) if (askedIds.has(c.id)) evaluated.add(c.tool_use_id)
+          s.lastStateTokens = st.stateTokens
           const sufficient = out.ratio >= config.minReductionRatio
           if (sessionMode === "dry-run") {
             // Record what was evaluated so dry-run never pays twice for the same calls; nothing is applied.
             s.decisions = { drop: new Set(), truncate: new Map(), evaluated }
             bump(s, { dryRuns: 1, ...(sufficient ? {} : { skippedInsufficient: 1 }) })
+            s.consecutiveInsufficient = sufficient ? 0 : s.consecutiveInsufficient + 1
+            s.consecutiveFailures = 0
             outcome("evaluated_dry_run")
             log("info", `dry-run session ${sessionID}: ~${tokens} → ~${after} tokens (${(out.ratio * 100).toFixed(1)}% chars), ${st.requests} Jev request(s), not applied`)
+            notifyHealth()
             return
           }
           if (!sufficient) {
             // Remember what was asked so unchanged calls are not paid for again.
             s.decisions = { drop: new Set(s.decisions?.drop ?? []), truncate: new Map(s.decisions?.truncate ?? []), evaluated }
             bump(s, { skippedInsufficient: 1, ...(config.nativeFallback ? { nativeFallbacks: 1 } : {}) })
+            s.consecutiveInsufficient++
+            s.consecutiveFailures = 0
             outcome("insufficient_reduction")
             log("info", `session ${sessionID}: reduction ${(out.ratio * 100).toFixed(1)}% below ${config.minReductionRatio * 100}%; native compaction remains in charge`)
+            notifyHealth()
             return
           }
+          s.consecutiveInsufficient = 0
+          s.consecutiveFailures = 0
           const originalParts = new Set(messages.flatMap((m) => m.content))
           const drop = new Set<string>()
           const truncate = new Map<string, string>()
@@ -476,13 +536,18 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
           outcome("pruning_active")
         } catch (e) {
           if (e instanceof BudgetError) (bump(s, { budgetBlocked: 1 }), (s.budgetBlocked = true), outcome("budget_exhausted"))
-          else (bump(s, { failures: 1, rateLimited: client.usage.rateLimited, ...(config.nativeFallback ? { nativeFallbacks: 1 } : {}) }), outcome("evaluation_failed", errorMessage(e)))
+          else {
+            bump(s, { failures: 1, rateLimited: client.usage.rateLimited, ...(config.nativeFallback ? { nativeFallbacks: 1 } : {}) })
+            s.consecutiveFailures++
+            outcome("evaluation_failed", errorMessage(e))
+          }
           log("warn", `session ${sessionID}: Jev skipped (${errorMessage(e)}); request sent unpruned`)
         } finally {
           s.lastRunTokens = triggerTokens
           s.lastRunAt = now()
           persist()
           emitChanged(sessionID)
+          notifyHealth()
         }
       }
 
@@ -497,6 +562,16 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
           return
         }
         const s = session(event.sessionID)
+        s.model = { providerID: event.model.providerID, id: event.model.id }
+        // Record the project directory once per session (for /jev-handover); process CWD is the location root.
+        if (s.counters.runs + s.counters.attempts === 0)
+          try {
+            const cwd = process.cwd()
+            ledger.update((d) => {
+              const rec = session$(d, event.sessionID, now())
+              if (!rec.projectDirectory) rec.projectDirectory = cwd
+            })
+          } catch {}
         // Thresholds and Jev state are based on what is actually sent (cached decisions applied).
         const current = sessionMode === "active" && s.decisions ? applyCached(event.messages, s.decisions).messages : event.messages
         const tokens = estimateContextTokens(current)
@@ -667,8 +742,17 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
               // Counted by the instance serving this session; if this instance has not seen a request for it yet
               // (e.g. right after a reload), count it only when it is the session's known owner in the ledger.
               const id = ev.data?.sessionID
-              if (s) (bump(s, { nativeCompactions: 1 }), (s.lastRunTokens = 0), (s.decisions = undefined), (s.providerContext = s.providerBaseline = undefined), persist())
-              else if (id && ownedHere.has(id)) (bump(session(id), { nativeCompactions: 1 }), persist())
+              if (s) {
+                bump(s, { nativeCompactions: 1 })
+                s.lastRunTokens = 0
+                s.decisions = undefined
+                s.providerContext = s.providerBaseline = undefined
+                s.consecutiveInsufficient = 0
+                s.consecutiveFailures = 0
+                // Health relief: a successful compaction resets notification cadence (hysteresis).
+                if (s.notify) resetNotifyState(s.notify)
+                persist()
+              } else if (id && ownedHere.has(id)) (bump(session(id), { nativeCompactions: 1 }), persist())
               continue
             }
             const t = ev.data?.tokens
@@ -683,6 +767,32 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
             bump(s, { primarySteps: 1, primaryCostUSD: Number(ev.data.cost) || 0, primaryInputTokens: t.input ?? 0, cacheReadTokens: t.cache?.read ?? 0, cacheWriteTokens: t.cache?.write ?? 0 })
             if (s.awaitingCacheObservation) (bump(s, { cacheWriteAfterPruneChange: t.cache?.write ?? 0 }), (s.awaitingCacheObservation = false))
             persist()
+            // Passive health check with the freshest provider-reported context; local only, no requests.
+            const st = s.notify ?? (s.notify = newNotifyState())
+            const input: HealthInput = {
+              contextTokens: s.providerContext ?? s.trigger?.triggerContextTokens ?? s.lastRunTokens,
+              contextIsProviderReported: s.providerContext !== undefined,
+              contextWindow: s.model ? contextWindows.get(`${s.model.providerID}/${s.model.id}`) : undefined,
+              stateTokens: s.lastStateTokens,
+              maxStateTokens: config.maxStateTokens,
+              eligibleResults: s.trigger?.eligibleResults,
+              protectedResults: s.trigger?.protectedResults,
+              reductionPctEstimated: s.counters.contextTokensBefore > 0
+                ? Math.max(0, Math.round((1 - s.counters.contextTokensAfter / s.counters.contextTokensBefore) * 100))
+                : undefined,
+              insufficientReductions: s.consecutiveInsufficient,
+              evaluationFailures: s.consecutiveFailures,
+              nativeCompactions: s.counters.nativeCompactions,
+              now: now(),
+            }
+            const result = assessHealth(input, healthThresholds)
+            if (healthShouldNotify(st, result.level, now())) {
+              recordNotify(st, result.level, now())
+              healthNotifyQueue.set(s.id, healthNotifyMessage(result.level, input))
+              emitChanged(s.id)
+            } else if (st.lastLevel !== result.level) {
+              recordNotify(st, result.level, now())
+            }
           }
         } catch {
           // stream closed on unload
@@ -696,6 +806,7 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
         emitChanged()
       }
       const noSession = "No session yet: open or start a session first (this command acts on the current session)."
+      const unknown = (what: string) => `unavailable — ${what}`
 
       /** Live trigger diagnostics; cooldown is recomputed so it counts down between requests. */
       const triggerView = (sessionID: string, stored?: Record<string, unknown>): TriggerDiagnostics | null => {
@@ -748,7 +859,10 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
           `threshold=min(${config.compactAtTokens}, ${config.compactAtContextFraction}×window) tokens, keepThreshold=${config.keepThreshold}, minReduction=${config.minReductionRatio}`,
           `spend (est.): ${sessionID ? `session $${(rec?.spentUSD ?? 0).toFixed(5)} / ${formatLimit(config.budget.perSessionUSD)}, ` : ""}today $${day$.toFixed(5)} / ${formatLimit(config.budget.perDayUSD)}`,
           sessionID
-            ? triggerLines(sessionID, rec?.trigger).join("\n")
+            ? [
+                `session health: ${healthText(sessionID)?.split("\n").slice(0, 2).join(" ") ?? "not assessed yet"}`,
+                triggerLines(sessionID, rec?.trigger).join("\n"),
+              ].join("\n")
             : "",
           sessionID
             ? `pruning applied now: ${st?.decisions && (st.decisions.drop.size || st.decisions.truncate.size) ? `${st.decisions.drop.size} dropped, ${st.decisions.truncate.size} truncated` : "none"} (decisions are in memory; history below is persisted)`
@@ -766,6 +880,45 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
         const overSession = !!rec && reached(config.budget.perSessionUSD, rec.spentUSD)
         const state: JevSnapshot["state"] =
           unavailableReason ? "unavailable" : eff === "off" ? "off" : priceError ? "unavailable" : st?.inflight ? "evaluating" : overDay || overSession ? "budget" : eff
+        const health: SessionHealthSnapshot | null = st
+          ? (() => {
+              const input: HealthInput = {
+                contextTokens: st.trigger?.triggerContextTokens ?? st.lastRunTokens,
+                contextIsProviderReported: st.trigger?.providerContextTokens !== null && st.trigger?.providerContextTokens !== undefined,
+                contextWindow: st.model ? contextWindows.get(`${st.model.providerID}/${st.model.id}`) : undefined,
+                stateTokens: st.lastStateTokens,
+                maxStateTokens: config.maxStateTokens,
+                eligibleResults: st.trigger?.eligibleResults,
+                protectedResults: st.trigger?.protectedResults,
+                reductionPctEstimated: st.counters.contextTokensBefore > 0
+                  ? Math.max(0, Math.round((1 - st.counters.contextTokensAfter / st.counters.contextTokensBefore) * 100))
+                  : undefined,
+                insufficientReductions: st.consecutiveInsufficient,
+                evaluationFailures: st.consecutiveFailures,
+                nativeCompactions: st.counters.nativeCompactions,
+                now: now(),
+              }
+              const r = assessHealth(input, healthThresholds)
+              return {
+                level: r.level,
+                contextTokens: input.contextTokens,
+                contextIsProviderReported: input.contextIsProviderReported,
+                contextWindow: input.contextWindow ?? null,
+                utilizationPct: r.utilizationPct,
+                stateTokens: input.stateTokens ?? null,
+                maxStateTokens: config.maxStateTokens,
+                eligibleResults: input.eligibleResults ?? null,
+                protectedResults: input.protectedResults ?? null,
+                reductionPctEstimated: input.reductionPctEstimated ?? null,
+                consecutiveFailures: st.consecutiveFailures,
+                consecutiveInsufficient: st.consecutiveInsufficient,
+                nativeCompactions: st.counters.nativeCompactions,
+                reasons: r.reasons,
+                recommendation: r.recommendation,
+                nextAction: r.nextAction,
+              }
+            })()
+          : null
         return {
           state,
           mode: eff,
@@ -797,13 +950,84 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
                 evaluating: !!st?.inflight,
                 attempts: c.attempts,
                 trigger: triggerView(sessionID, rec?.trigger),
+                health,
               }
             : null,
         }
       }
 
-      const setSessionOverride = async (sessionID: string, next: Mode | undefined) => {
-        ledger.update((d) => {
+      /** /jev-health: concise local report; no requests. */
+      const healthText = (sessionID?: string): string | null => {
+        if (!sessionID) return null
+        const { rec, st, counters: c } = sessionView(sessionID)
+        const t = st?.trigger
+        const window = st?.model ? contextWindows.get(`${st.model.providerID}/${st.model.id}`) : undefined
+        const input: HealthInput = {
+          contextTokens: t?.triggerContextTokens ?? st?.lastRunTokens ?? 0,
+          contextIsProviderReported: t?.providerContextTokens !== null && t?.providerContextTokens !== undefined,
+          contextWindow: window,
+          stateTokens: st?.lastStateTokens,
+          maxStateTokens: config.maxStateTokens,
+          eligibleResults: t?.eligibleResults,
+          protectedResults: t?.protectedResults,
+          reductionPctEstimated: c.contextTokensBefore > 0 ? Math.max(0, Math.round((1 - c.contextTokensAfter / c.contextTokensBefore) * 100)) : undefined,
+          insufficientReductions: st?.consecutiveInsufficient ?? 0,
+          evaluationFailures: st?.consecutiveFailures ?? 0,
+          nativeCompactions: c.nativeCompactions,
+          now: now(),
+        }
+        const r = assessHealth(input, healthThresholds)
+        const k = (n: number) => n.toLocaleString("en-US")
+        return [
+          `Session health: ${HEALTH_LABEL[r.level]}`,
+          `  Primary context: ${k(input.contextTokens)} tokens (${input.contextIsProviderReported ? "provider-reported" : "estimated"})${window ? ` of ${k(window)} (model window, ${r.utilizationPct}% used)` : " (model window unknown)"}`,
+          `  Jev evaluation state: ${input.stateTokens === undefined ? "not yet evaluated" : `${k(input.stateTokens)} / ${k(config.maxStateTokens)} tokens`}`,
+          `  Tool results: ${input.eligibleResults ?? "?"} eligible, ${input.protectedResults ?? "?"} protected`,
+          `  Optimization effectiveness: ${input.reductionPctEstimated === undefined ? "no evaluation yet" : `~${input.reductionPctEstimated}% (evaluation snapshot estimate, not provider billing)`}`,
+          `  Consecutive outcomes: ${input.evaluationFailures} failure(s), ${input.insufficientReductions} insufficient-reduction(s)`,
+          `  Native compactions this session: ${input.nativeCompactions}`,
+          `  Reason: ${r.reasons.join("; ")}`,
+          `  Recommendation: ${r.recommendation}`,
+          `  Next action: ${r.nextAction}`,
+          "Advisory only: Jev never compacts, resets or closes sessions automatically.",
+        ].join("\n")
+      }
+
+      /**
+       * /jev-handover: a continuation summary assembled from local Jev/session records.
+       * Deliberately no inference request: where a model-generated narrative would be needed
+       * (branch, commits, modified files, test results), the output states what is missing
+       * instead of inventing it. Never includes credentials or message content.
+       */
+      const handoverText = async (sessionID?: string): Promise<string> => {
+        if (!sessionID) return noSession
+        const { rec, st, counters: c } = sessionView(sessionID)
+        const project = rec?.projectDirectory ?? unknown("project directory (not recorded by Jev; check the session header)")
+        const lines = [
+          "Jev handover summary (local records only; no inference request was made)",
+          `  Session: ${sessionID}`,
+          `  Project directory: ${project}`,
+          `  Health at handover: ${(healthText(sessionID) ?? "").split("\n")[0]}`,
+          `  Objective / completed work / architectural decisions: ${unknown("not recorded by Jev; summarize from the conversation and reports explicitly")}`,
+          `  Git branch / commits / modified files / test results: ${unknown("not visible to the plugin; run git status, git log and the test suite in the new session")}`,
+          `  Jev state for this session: ${c.runs} evaluation(s), ${c.appliedRuns} applied, ${c.failures} failure(s), ${c.nativeCompactions} native compaction(s), ${c.resets} reset(s)`,
+          `  Jev cost this session: $${(rec?.spentUSD ?? 0).toFixed(5)} (estimated)`,
+          `  Pruning now applied: ${st?.decisions ? `${st.decisions.drop.size} dropped, ${st.decisions.truncate.size} truncated` : "none"} (a fresh session starts unpruned)`,
+          `  Recommended next step: ${assessHealth({
+            contextTokens: st?.trigger?.triggerContextTokens ?? st?.lastRunTokens ?? 0,
+            contextIsProviderReported: false,
+            maxStateTokens: config.maxStateTokens,
+            insufficientReductions: st?.consecutiveInsufficient ?? 0,
+            evaluationFailures: st?.consecutiveFailures ?? 0,
+            nativeCompactions: c.nativeCompactions,
+            now: now(),
+          }, healthThresholds).nextAction}`,
+          "Copy this block into the new session's first message and add the project-specific details above.",
+        ]
+        return lines.join("\n")
+      }
+
+      const setSessionOverride = async (sessionID: string, next: Mode | undefined) => {        ledger.update((d) => {
           const rec = session$(d, sessionID, now())
           if (next) rec.override = next
           else delete rec.override
@@ -868,6 +1092,24 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
           emitChanged(sessionID)
           return `Jev will evaluate this session on its next model request (mode=${eff}). No request is sent now.`
         },
+        /** Concise health report; local computation only, no Jev or model request. */
+        health: (sessionID?: string) => {
+          const h = healthText(sessionID)
+          return h ?? noSession
+        },
+        /**
+         * Continuation summary for a fresh session. Local metadata only (session, project, Jev state);
+         * no inference request is made. Where a model-generated narrative would be needed, the output
+         * says so explicitly instead of inventing content.
+         */
+        handover: async (sessionID?: string) => handoverText(sessionID),
+        /** Drains a pending health notification for the session (one message per transition). */
+        drainNotification: (sessionID?: string): string | null => {
+          if (!sessionID) return null
+          const msg = healthNotifyQueue.get(sessionID)
+          if (msg !== undefined) healthNotifyQueue.delete(sessionID)
+          return msg ?? null
+        },
       }
 
       // RPC powers the TUI/GUI commands and indicators; without it pruning still works and the CLI reader remains.
@@ -877,10 +1119,13 @@ export function createPlugin(deps: Deps = {}): Plugin.Plugin {
         snapshot: async (input: any) => (await snapshot(input?.sessionID)) as any,
         status: async (input: any) => ({ text: await actions.status(input?.sessionID) }),
         stats: async (input: any) => ({ text: await actions.stats(input?.sessionID) }),
+        health: async (input: any) => ({ text: actions.health(input?.sessionID) }),
+        handover: async (input: any) => ({ text: await actions.handover(input?.sessionID) }),
+        drainNotification: async (input: any) => ({ text: actions.drainNotification(input?.sessionID) ?? "" }),
         setMode: async (input: any) => ({ text: await actions.setMode(input.mode as Mode) }),
+        setSessionMode: async (input: any) => ({ text: await actions.setSessionMode(input.sessionID, input.mode) }),
         reset: async (input: any) => ({ text: actions.reset(input.sessionID) }),
         compact: async (input: any) => ({ text: actions.compact(input.sessionID) }),
-        setSessionMode: async (input: any) => ({ text: await actions.setSessionMode(input.sessionID, input.mode) }),
       })
       emitChanged = (sessionID?: string) =>
         void (registration as any)?.events?.emit?.("changed", sessionID ? { sessionID } : {})?.catch?.(() => {})

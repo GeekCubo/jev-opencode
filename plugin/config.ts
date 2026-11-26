@@ -49,6 +49,8 @@ export interface JevConfig {
   /** Extra regexes (as strings) whose matching tool names are never pruned. */
   protectTools: string[]
   logDecisions: boolean
+  /** Optional advisory session-health threshold overrides (tokens). */
+  health?: { growing?: number; compaction?: number; freshSession?: number; strongFreshSession?: number }
 }
 
 export const DEFAULTS: JevConfig = {
@@ -140,6 +142,7 @@ export function resolveConfig(raw: Record<string, unknown> = {}): JevConfig {
     nativeFallback: src.nativeFallback ?? DEFAULTS.nativeFallback,
     protectTools: Array.isArray(src.protectTools) ? src.protectTools.map(String) : [],
     logDecisions: src.logDecisions === true,
+    health: src.health && typeof src.health === "object" ? { ...src.health } : undefined,
   }
   if (cfg.maxStateTokens >= cfg.maxRequestTokens) throw new ConfigError("maxStateTokens must be below maxRequestTokens")
   for (const pattern of cfg.protectTools) new RegExp(pattern)

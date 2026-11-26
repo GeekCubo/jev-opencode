@@ -4,7 +4,7 @@
 import { createSignal, onCleanup } from "solid-js"
 import { Command, ComposerPill, Plugin, Slot } from "@opencode/plugin/gui"
 import { JevRpc, type JevSnapshot } from "./rpc.ts"
-import { jevCommandList, shortLabel, sidebarRows, stateTone, type UiHost } from "./ui-core.ts"
+import { jevCommandList, shortLabel, sidebarRows, stateTone, healthTone, type UiHost } from "./ui-core.ts"
 
 export default Plugin.define({
   setup(ctx) {
@@ -40,6 +40,14 @@ export default Plugin.define({
       const sid = ctx.sessions.current()?.id
       if (sid) keys.add(sid)
       for (const k of keys) load(k || undefined)
+      // Drain a pending health notification for the current session (one toast per transition).
+      if (sid)
+        void rpc(dirs[sid] ?? directory())
+          .drainNotification({ sessionID: sid })
+          .then((r: { text: string }) => {
+            if (r.text) ctx.toast.show({ title: "Jev", description: r.text, variant: r.text.includes("failed") || r.text.includes("fresh session") ? "error" : "default" })
+          })
+          .catch(() => {})
     }
     refreshAll()
     let off: (() => void) | undefined
@@ -58,7 +66,7 @@ export default Plugin.define({
         const s = snaps()[input.session.id] ?? snaps()[""]
         return {
           label: shortLabel(s),
-          tone: stateTone(s?.state ?? "unreachable"),
+          tone: healthTone(s?.session?.health?.level) ?? stateTone(s?.state ?? "unreachable"),
           title: "Jev Compaction",
           rows: sidebarRows(s).map(([k, v]) => ({ id: k, label: k, detail: v })),
         }

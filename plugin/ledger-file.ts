@@ -24,6 +24,8 @@ export interface SessionRecord {
   trigger?: Record<string, unknown>
   /** Persistent per-session mode override; absent = inherit the global mode. */
   override?: "off" | "dry-run" | "active"
+  /** Project directory recorded on first sight (for /jev-handover). */
+  projectDirectory?: string
   /** Epoch ms of last update, for pruning old sessions. */
   updatedAt: number
 }

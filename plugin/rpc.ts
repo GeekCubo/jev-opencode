@@ -99,6 +99,34 @@ export interface JevSessionSnapshot {
   attempts: number
   /** Null until this server instance has seen a request for the session (e.g. right after a reload). */
   trigger: TriggerDiagnostics | null
+  /** Session health (local assessment; advisory only). Null when not yet assessed. */
+  health: SessionHealthSnapshot | null
+}
+
+export type SessionHealthLevel = "healthy" | "growing" | "compaction_recommended" | "new_session_recommended"
+
+/** Advisory session health snapshot (computed locally; never a paid request). */
+export interface SessionHealthSnapshot {
+  level: SessionHealthLevel
+  /** Primary context tokens behind the assessment (provider-reported when true). */
+  contextTokens: number
+  contextIsProviderReported: boolean
+  /** Model context window when known. */
+  contextWindow: number | null
+  /** 0–100 utilisation vs the window, when known. */
+  utilizationPct: number | null
+  /** Jev evaluation-state tokens of the latest evaluation, when one ran. */
+  stateTokens: number | null
+  maxStateTokens: number
+  eligibleResults: number | null
+  protectedResults: number | null
+  reductionPctEstimated: number | null
+  consecutiveFailures: number
+  consecutiveInsufficient: number
+  nativeCompactions: number
+  reasons: string[]
+  recommendation: string
+  nextAction: string
 }
 
 export interface JevSnapshot {
@@ -137,6 +165,10 @@ export const JevRpc = Rpc.define({
     },
     reset: { input: { ...sessionInput, required: ["sessionID"] }, output: textOutput },
     compact: { input: { ...sessionInput, required: ["sessionID"] }, output: textOutput },
+    /** Concise session health report (local computation only). */
+    health: { input: sessionInput, output: textOutput },
+    /** Continuation summary for a fresh session; requires an explicit, deliberate call. */
+    handover: { input: { ...sessionInput, required: ["sessionID"] }, output: textOutput },
     /** Per-session mode override; "inherit" removes it. */
     setSessionMode: {
       input: {
@@ -147,6 +179,8 @@ export const JevRpc = Rpc.define({
       },
       output: textOutput,
     },
+    /** Drains one pending session health notification message (empty when none). */
+    drainNotification: { input: sessionInput, output: textOutput },
   },
   events: {
     /** Jev state changed (mode, evaluation started/finished, reset, budget). Clients re-read `snapshot`. */

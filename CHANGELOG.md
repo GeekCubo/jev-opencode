@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.4 (2026-11-26), development release
+
+- Added: session health monitoring (advisory only; Jev never compacts, resets or closes sessions automatically). Four levels — Healthy / Growing / Compaction recommended / New session recommended — computed locally from provider-reported or estimated primary context, the model's context window (utilisation), Jev evaluation-state size, eligibility, recent reduction effectiveness, consecutive failures/insufficient reductions and native-compaction history. Adaptive thresholds: absolute advisory defaults (100k/200k/300k/500k) scaled down for small model windows (25%/50%/75% of the window); optional overrides via `health` in the existing plugin options.
+- Added: `/jev-health` (concise report; no inference requests) and `/jev-handover` (local-records continuation summary; explicitly no inference request, honest about missing facts; never includes credentials).
+- Added: proactive non-blocking notifications on meaningful deterioration only (hysteresis + 30-minute re-notify cooldown, per-session state, reset after native compaction), delivered through the existing `changed` event + a new `drainNotification` RPC; TUI shows a toast, Desktop a toast with the pill tone reflecting health.
+- Status indicators now include the health level: `Jev: Active · TypeSafe · Healthy`; `/jev-status` gains a health summary line; the snapshot RPC gains a `session.health` object.
+- Diagnostics keep primary model context, evaluation-state tokens, eligibility, effectiveness and provider-reported figures clearly separated; cumulative removal is labelled per-request accounting, never savings.
+
 ## 0.2.3 (2026-11-26), development release
 
 - Fixed: long sessions whose collapsed evaluation history exceeds `maxStateTokens` (upstream: "history too large for Jev") could never be evaluated; Jev fell back to native compaction forever. `fitState` now ends in a `bounded window` stage: the state keeps the first entry, the oldest entries carrying undecided candidate calls (up to the token budget), an omission marker, and the pinned recent tail. `compact()` asks only about calls represented in the window; the rest are flagged `windowed_out` — kept untouched, never marked evaluated — so later runs evaluate them (guaranteed forward progress). Sessions that fit the ordinary stages are unaffected; the pinned-tail-only failure still throws (fail-open unchanged).

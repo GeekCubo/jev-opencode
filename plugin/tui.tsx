@@ -36,7 +36,8 @@ export function jevCommands(ctx: Pick<Ctx, "ui" | "client" | "location">) {
   }))
 }
 
-/** Reactive snapshot for one session ("" = welcome screen). Refreshed on Jev `changed` events and every 15 s. */
+/** Reactive snapshot for one session ("" = welcome screen). Refreshed on Jev `changed` events and every 15 s.
+ * A `changed` event also drains a pending session health notification (one toast per transition). */
 function useSnapshot(ctx: Ctx, sessionID: () => string) {
   const [snap, setSnap] = createSignal<JevSnapshot | undefined>()
   const host = tuiHost(ctx)
@@ -46,10 +47,24 @@ function useSnapshot(ctx: Ctx, sessionID: () => string) {
       .snapshot({ sessionID: sessionID() || undefined })
       .then((s) => setSnap(s as JevSnapshot))
       .catch(() => setSnap(undefined))
+  const drain = () => {
+    const sid = sessionID() || undefined
+    if (!sid) return
+    void host
+      .rpc()
+      .drainNotification({ sessionID: sid })
+      .then((r) => {
+        if (r.text) host.notify(r.text, r.text.includes("failed") || r.text.includes("fresh session") ? "warning" : "info")
+      })
+      .catch(() => {})
+  }
   load()
   let off: (() => void) | undefined
   try {
-    off = host.rpc() && (ctx.client as any).rpc(JevRpc).events.on("changed", load)
+    off = host.rpc() && (ctx.client as any).rpc(JevRpc).events.on("changed", () => {
+      load()
+      drain()
+    })
   } catch {
     off = undefined
   }
