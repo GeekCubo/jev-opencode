@@ -3,8 +3,8 @@
 // the window cannot show. When relevance cannot be established, the candidate is retained.
 import { describe, expect, it } from "vitest"
 import { compact } from "../plugin/upstream/compact.ts"
-import { fitState, collectToolCalls, visibleCallIds, type FittedState } from "../plugin/upstream/state.ts"
-import { project, makeProtector, checkIntegrity } from "../plugin/compaction.ts"
+import { fitState, collectToolCalls, visibleCallIds } from "../plugin/upstream/state.ts"
+import { project, makeProtector } from "../plugin/compaction.ts"
 import { AssistantMessage, ToolMessage, UserMessage, SystemMessage } from "@opencode/ai"
 
 const P = { goal: "", preserveRecentMessages: 6, maxStateTokens: 25_000, maxRequestTokens: 30_000, keepThreshold: 0.5, truncateHeadChars: 300 }
@@ -21,11 +21,12 @@ function build(parts: Array<{ kind: "assistant" | "tool"; tool: string; text?: s
     const call = parts[i]!
     const result = parts[i + 1]!
     const id = call.id ?? `call_${++n}`
+    const textPart = call.text ? ([{ type: "text", text: call.text }] as any) : []
     msgs.push(new AssistantMessage({ role: "assistant", content: [
-      ...(call.text ? [{ type: "text", text: call.text }] : []),
+      ...textPart,
       { type: "tool-call", id, name: call.tool, input: { path: `src/file${n}.ts` } },
-    ]}))
-    msgs.push(new ToolMessage({ role: "tool", content: [{ type: "tool-result", id, name: result.tool, result: { type: "text", value: result.result ?? "x".repeat(300) } }] }))
+    ]} as any))
+    msgs.push(new ToolMessage({ role: "tool", content: [{ type: "tool-result", id, name: result.tool, result: { type: "text", value: result.result ?? "x".repeat(300) } }] } as any))
   }
   msgs.push(new UserMessage({ role: "user", content: [{ type: "text", text: "Continue." }] }))
   return msgs
