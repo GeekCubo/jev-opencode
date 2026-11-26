@@ -22,7 +22,7 @@ STAGED_VERSION="$(jq -r .version "$STAGED/package.json")"
 echo "Staged package: $STAGED (version $STAGED_VERSION)"
 
 # --- Validate required runtime files in the staged artifact -------------------------------
-for f in index.ts tui.tsx rpc.ts util.ts setup.ts health.ts jev.ts config.ts compaction.ts \
+for f in index.ts tui.tsx rpc.ts util.ts setup.ts jsonc.ts health.ts jev.ts config.ts compaction.ts \
          ledger-file.ts statistics.ts ui-core.ts dist/gui-experimental.cjs \
          upstream/state.ts upstream/compact.ts upstream/request.ts upstream/types.ts; do
   [ -f "$STAGED/$f" ] || die "staged package is missing required runtime file: $f"

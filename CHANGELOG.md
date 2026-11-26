@@ -1,6 +1,10 @@
 # Changelog
 
-## 0.3.0 (2026-11-26), release candidate
+## 0.3.0 (2026-11-26)
+
+- Requires **OpenCode v2.2.7+**; owner-confirmed working on OpenCode v2.4.2.
+- `/jev-setup` edits the configuration in place: comments, trailing commas, formatting, custom agents and every unrelated setting are preserved byte for byte; only approved `agent.<role>.model` values change (or approved agents are added). Every edit is verified before writing; invalid files are refused untouched. Previously, applying re-serialized the file and removed comments.
+- npm package metadata (repository, homepage, license and notice files in the package, `engines.opencode`).
 
 - Public installation: the plugin directory is now a publishable npm package (`jev-compaction`) with the exports map, `files` list and versioned metadata OpenCode's plugin loader resolves (`plugins: ["jev-compaction"]`); the prebuilt Desktop GUI bundle ships in `dist/`.
 - Added: `/jev-setup`, an optional, provider-independent agent-configuration assistant — local, deterministic model recommendations (capabilities and known pricing only; unknown stays unknown), quality/balanced/economy presets plus custom overrides, explicit preview and approval, timestamped unique backups and atomic writes with rollback instructions. The default is **keep my existing configuration**; nothing changes without explicit approval, and Jev works fully without it.

@@ -39,7 +39,7 @@ describe("packed artifact: native npm installation", () => {
 
   it("contains every runtime file the exports map points to", () => {
     const root = join(dir, "node_modules", "jev-compaction")
-    for (const f of ["index.ts", "tui.tsx", "rpc.ts", "dist/gui-experimental.cjs", "upstream/state.ts", "upstream/compact.ts", "upstream/request.ts", "upstream/types.ts", "upstream/LICENSE", "upstream/NOTICE.md", "health.ts", "setup.ts", "client.ts" ]) {
+    for (const f of ["index.ts", "tui.tsx", "rpc.ts", "jsonc.ts", "dist/gui-experimental.cjs", "upstream/state.ts", "upstream/compact.ts", "upstream/request.ts", "upstream/types.ts", "upstream/LICENSE", "upstream/NOTICE.md", "health.ts", "setup.ts", "client.ts" ]) {
       // client.ts is not required; the exports map only needs the entry points' imports to resolve.
       if (f === "client.ts") continue
       expect(existsSync(join(root, f))).toBe(true)

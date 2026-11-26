@@ -4,13 +4,51 @@
   "description": "Jev Compaction for OpenCode: automatic context optimization, session health and optional agent configuration, using the TypeSafe Jev evaluation model.",
   "type": "module",
   "license": "MIT",
+  "author": "GeekCubo",
+  "homepage": "https://github.com/GeekCubo/jev-opencode#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GeekCubo/jev-opencode.git",
+    "directory": "plugin"
+  },
+  "bugs": {
+    "url": "https://github.com/GeekCubo/jev-opencode/issues"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "context",
+    "compaction",
+    "jev"
+  ],
+  "engines": {
+    "opencode": ">=2.2.7"
+  },
   "exports": {
     ".": "./index.ts",
     "./tui": "./tui.tsx",
     "./rpc": "./rpc.ts",
     "./gui-experimental": "./dist/gui-experimental.cjs"
   },
-  "files": ["index.ts", "jev.ts", "compaction.ts", "config.ts", "health.ts", "setup.ts", "ledger-file.ts", "rpc.ts", "statistics.ts", "tui.tsx", "ui-core.ts", "util.ts", "upstream", "dist"],
+  "files": [
+    "index.ts",
+    "jev.ts",
+    "jsonc.ts",
+    "compaction.ts",
+    "config.ts",
+    "health.ts",
+    "setup.ts",
+    "ledger-file.ts",
+    "rpc.ts",
+    "statistics.ts",
+    "tui.tsx",
+    "ui-core.ts",
+    "util.ts",
+    "upstream",
+    "dist",
+    "LICENSE",
+    "NOTICE"
+  ],
   "peerDependencies": {
     "@opentui/core": ">=0.8.1",
     "@opentui/solid": ">=0.8.1",

@@ -4,11 +4,12 @@
 
 | OpenCode | Status |
 |---|---|
-| 2.2.7 (server, TUI, Desktop) | **Tested**: unit tests, isolated TUI under tmux, isolated Desktop app driven through DevTools |
-| 2.3.x – 2.4.x | **Untested.** Expected to work if the documented `context` hook, plugin RPC and client slot/command APIs are unchanged. Desktop GUI plugin API is marked experimental. |
+| 2.2.7 (server, TUI, Desktop) | **Minimum supported.** Tested with the 0.2.x–0.3.0 release candidates: unit tests, isolated TUI under tmux, isolated Desktop app driven through DevTools. The development type definitions are `@opencode/plugin` 2.2.7. |
+| 2.4.2 | **Owner-confirmed:** Jev 0.3.0 activated and working in the owner's live OpenCode installation. |
+| 2.3.x – 2.4.1 | **Not individually tested.** Expected to work: the plugin interfaces Jev uses are the same in 2.2.7 and 2.4.2. Desktop GUI plugin API is marked experimental. |
 | 1.x (`@opencode-ai/plugin`) | **Unsupported.** V2 plugin API only. |
 
-Minimum tested: 2.2.7. Earlier 2.x releases are untested. Do not assume newer versions work until the check below passes.
+Requirement: **OpenCode v2.2.7+**. Earlier 2.x releases are unsupported. Future releases are expected to work while OpenCode keeps the plugin interfaces Jev uses (the `context` hook, plugin RPC, client slots and commands, and the experimental GUI plugin API); this is not guaranteed.
 
 ## Layering
 
@@ -39,6 +40,3 @@ Minimum tested: 2.2.7. Earlier 2.x releases are untested. Do not assume newer ve
 5. Run the isolated Desktop app with `--remote-debugging-port`, then use `e2e/cdp.mjs` to run the seven commands and capture screenshots.
 6. Update the table above only with what was actually tested.
 
-## 2.4.1
-
-Not installed, not tested, and its changelog has not been reviewed. Status: **unverified**. Run the check above in isolation before upgrading.

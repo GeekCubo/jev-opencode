@@ -1,0 +1,20 @@
+Jev Compaction for OpenCode
+Copyright (c) 2026 GeekCubo. Licensed under the MIT License (see LICENSE).
+
+This product includes software derived from fast-jev-compaction
+(https://github.com/tamaratran/fast-jev-compaction), revision
+e3f262a7f4d42bd8dd32ced30d26176f7cb545b0, MIT License, Copyright (c) 2025.
+The adapted files are in plugin/upstream/ together with the original LICENSE
+and a NOTICE.md describing the local modifications. The original project is a
+Claude Code plugin; this repository is an independent OpenCode port.
+
+Third-party services and software (not included, not affiliated):
+- Jev is a proprietary model and API of TypeSafe (https://typesafe.ai). Use of
+  the Jev API is governed by TypeSafe's own terms and requires your own account.
+- OpenCode (https://opencode.ai) is an independently maintained project.
+  @opencode/plugin is used as a development dependency only.
+
+The prebuilt Desktop bundle plugin/dist/gui-experimental.cjs is generated from
+plugin/gui.tsx, plugin/ui-core.ts and plugin/rpc.ts (npm run build:gui). It
+bundles no third-party source code: @opencode/plugin/gui and solid-js are
+provided by the OpenCode Desktop host at runtime and are kept external.

@@ -16,7 +16,7 @@ const plugins = () => join(home, ".local", "share", "opencode-plugins")
 const pkg = (dir: string, version: string) => {
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "jev-compaction", version }))
-  for (const f of ["index.ts", "tui.tsx", "rpc.ts", "util.ts", "setup.ts", "health.ts", "jev.ts", "config.ts", "compaction.ts", "ledger-file.ts", "statistics.ts", "ui-core.ts"]) {
+  for (const f of ["index.ts", "tui.tsx", "rpc.ts", "util.ts", "setup.ts", "health.ts", "jev.ts", "jsonc.ts", "config.ts", "compaction.ts", "ledger-file.ts", "statistics.ts", "ui-core.ts"]) {
     mkdirSync(join(dir, ...f.split("/").slice(0, -1)), { recursive: true })
     writeFileSync(join(dir, f), `// ${f}\nexport const ${f.replace(/\W/g, "_")} = 1\n`)
   }

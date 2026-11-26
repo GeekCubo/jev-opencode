@@ -1,10 +1,12 @@
 # Jev Compaction for OpenCode
 
-An optional plugin for [OpenCode](https://opencode.ai) 2.2.7 that trims stale tool output from the context sent to your coding model. It uses [TypeSafe](https://typesafe.ai)'s Jev evaluation model to decide which old tool calls and results are no longer needed. Instructions, conversation text and recent work are kept verbatim, and OpenCode's stored conversation history is never modified.
+An optional plugin for [OpenCode](https://opencode.ai) that trims stale tool output from the context sent to your coding model. It uses [TypeSafe](https://typesafe.ai)'s Jev evaluation model to decide which old tool calls and results are no longer needed. Instructions, conversation text and recent work are kept verbatim, and OpenCode's stored conversation history is never modified.
 
 It does not replace your coding model or provider, and it does not make coding-model access free. Jev evaluations are a separate paid service.
 
-> Status: **0.3.0, release candidate.** Tested on OpenCode 2.2.7 only. Real-world cost savings have not been measured yet (see [Benchmarks](#benchmarks)).
+> **Requires OpenCode v2.2.7 or newer.** Version 0.3.0. Real-world cost savings have not been measured (see [Benchmarks](#benchmarks)).
+>
+> npm: [`jev-compaction`](https://www.npmjs.com/package/jev-compaction) · GitHub: [GeekCubo/jev-opencode](https://github.com/GeekCubo/jev-opencode)
 
 This is an OpenCode port of [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction) (MIT, by GitHub user `tamaratran`), originally a Claude Code plugin. GeekCubo maintains this port. It is not affiliated with, or endorsed by, TypeSafe or the OpenCode project.
 
@@ -42,68 +44,62 @@ Synthetic demo sessions with a mock coding model. TUI images are rendered from e
 |---|---|
 | ![TUI trigger diagnostics](docs/screenshots/tui-trigger-diagnostics.png) | ![Desktop trigger diagnostics](docs/screenshots/desktop-trigger-diagnostics.png) |
 
+## Why compaction
+
+Long coding sessions accumulate tool output — file reads, search results, command logs — that the model no longer needs but that is still sent with every request. That inflates request size, can push a session toward the model's context limit sooner, and can trigger OpenCode's native compaction earlier. Jev removes stale tool output from the outgoing request while leaving instructions, conversation text and recent work intact. Whether this lowers your bill depends on your provider, caching and workload; it has not been measured on real coding tasks (see [Benchmarks](#benchmarks)).
+
 ## Quick start
 
 Requirements:
-- OpenCode 2.2.7 (TUI and/or Desktop).
-- A TypeSafe account and API key.
+- **OpenCode v2.2.7+** (TUI and/or Desktop).
+- A TypeSafe account and API key (or an OpenCode Zen account; see [OpenCode Zen](#opencode-zen-optional)).
 
-### Native npm installation (once published)
+No cloning, building or separate service is needed: OpenCode installs the npm package itself.
 
-The plugin is a standard npm package (`jev-compaction`). After publication:
+1. Store your TypeSafe key in a file readable only by you (never in `opencode.jsonc`):
 
-```sh
-# 1. Store your TypeSafe key in a file readable only by you (never in opencode.jsonc).
-umask 077
-printf '%s' 'YOUR_TYPESAFE_KEY' > ~/.config/opencode/typesafe-api-key
-```
+   ```sh
+   umask 077
+   printf '%s' 'YOUR_TYPESAFE_KEY' > ~/.config/opencode/typesafe-api-key
+   ```
 
-2. Add the plugin to `~/.config/opencode/opencode.jsonc`:
+   Alternatively, set `TYPESAFE_API_KEY` in the environment of the OpenCode service.
 
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": [
-    {
-      "package": "jev-compaction", // or "jev-compaction@0.3.0" for a pinned version
-      "options": { "mode": "dry-run" }
-    }
-  ]
-}
-```
+2. Add the plugin to the `plugins` array of your **global** configuration, `~/.config/opencode/opencode.jsonc` (the Desktop app loads plugins from the global config only). Keep all other settings.
 
-OpenCode installs the package itself through its normal plugin-loading mechanism — no cloning, no build step, no background service. The prebuilt Desktop bundle (`dist/gui-experimental.cjs`) is included in the package.
+   Latest published version:
 
-> Until the package is published to npm, install from a checkout instead (below). Both methods are identical after installation.
+   ```jsonc
+   {
+     "$schema": "https://opencode.ai/config.json",
+     "plugins": [
+       { "package": "jev-compaction", "options": { "mode": "dry-run" } }
+     ]
+   }
+   ```
 
-### Installation from a checkout (pre-publication)
+   Pinned to this release:
 
-```sh
-# 1. Get the plugin. Any location outside ~/.config/opencode/plugins works; that folder auto-loads plugins.
-git clone https://github.com/GeekCubo/jev-opencode.git ~/.local/share/opencode-plugins/jev-opencode
+   ```jsonc
+   "plugins": [
+     { "package": "jev-compaction@0.3.0", "options": { "mode": "dry-run" } }
+   ]
+   ```
 
-# 2. Store your TypeSafe key in a file readable only by you (never in opencode.jsonc).
-umask 077
-printf '%s' 'YOUR_TYPESAFE_KEY' > ~/.config/opencode/typesafe-api-key
-```
+   On OpenCode v2.4.2 you can also run `opencode plugin add jev-compaction` (or `jev-compaction@0.3.0`), which installs the package and adds it to the global configuration; then add the `options` shown above.
 
-3. Add the plugin to the `plugins` array of `~/.config/opencode/opencode.jsonc`. Use an absolute path; the Desktop app loads plugins from the global config only.
+3. OpenCode reloads its config automatically. Run `/reload` in an open TUI or reopen the Desktop window, then run `/jev-status`: it shows the Jev version and `mode=dry-run`.
 
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": [
-    {
-      "package": "/home/YOUR_USER/.local/share/opencode-plugins/jev-opencode/plugin",
-      "options": { "mode": "dry-run" }
-    }
-  ]
-}
-```
+4. When the dry-run figures look right, switch to active mode with `/jev-enable` (or `"mode": "active"`).
 
-4. OpenCode reloads its config automatically. Run `/reload` in an open TUI or reopen the Desktop window, then run `/jev-status`.
+The prebuilt Desktop bundle (`dist/gui-experimental.cjs`) is included in the package. To work on the plugin itself, see [INSTALL.md](INSTALL.md) (checkout installation, building from source).
 
-The prebuilt Desktop bundle (`plugin/dist/gui-experimental.cjs`) is included, so no build step is needed. See [INSTALL.md](INSTALL.md) for building from source, upgrading and removal.
+### Upgrade, disable, uninstall, rollback
+
+- **Upgrade.** With an unpinned `"jev-compaction"` entry, OpenCode resolves the latest published version (on v2.4.2, `opencode plugin update jev-compaction`). With a pinned entry, change the version in the specifier.
+- **Disable.** `/jev-disable` (all sessions) or `/jev-session-disable` (one session), or set `"mode": "off"`. Requests then go out unchanged.
+- **Uninstall.** Remove the entry from `plugins` (on v2.4.2, `opencode plugin remove jev-compaction`). See [Uninstall](#uninstall) for the files Jev leaves behind.
+- **Rollback.** Pin the previous version (e.g. `"jev-compaction@0.2.4"` if you used it from a checkout, point back to that checkout). Your configuration and conversations are not modified by Jev, so nothing else needs restoring. If you applied `/jev-setup`, its backup (shown when it was applied) restores the previous agent configuration.
 
 ## TypeSafe Direct
 
@@ -290,10 +286,11 @@ Jev is an external service, and this plugin is not local or offline while active
 
 | Version | Status |
 |---|---|
-| OpenCode 2.2.7: server, TUI and Desktop | Tested |
-| OpenCode 2.3 – 2.4.1 | Untested |
-| OpenCode 1.x | Unsupported |
-| Future releases | Not guaranteed |
+| OpenCode v2.2.7: server, TUI and Desktop | Minimum supported. Tested with the 0.2.x–0.3.0 release candidates: unit tests, isolated TUI and Desktop |
+| OpenCode v2.4.2 | Owner-confirmed: Jev 0.3.0 activated and working in a live installation |
+| OpenCode v2.3.x – v2.4.1 | Not individually tested; expected to work (same plugin interfaces as v2.2.7 and v2.4.2) |
+| OpenCode 1.x | Unsupported (V2 plugin API only) |
+| Future releases | Expected to work while OpenCode keeps the plugin interfaces Jev uses; not guaranteed |
 
 - **Desktop part.** It uses OpenCode's experimental GUI plugin API. Desktop 2.2.7 has no sidebar extension point, so session details appear in a status pill above the message box.
 - **More detail.** See [COMPATIBILITY.md](COMPATIBILITY.md).
@@ -302,7 +299,7 @@ Jev is an external service, and this plugin is not local or offline while active
 
 | Problem | Fix |
 |---|---|
-| `/jev-…` commands missing | Run `/reload` in the TUI, or reopen the Desktop window. Check that the plugin entry is in the **global** config, uses an absolute path, and that `/jev-status` works. |
+| `/jev-…` commands missing | Run `/reload` in the TUI, or reopen the Desktop window. Check that the plugin entry is in the **global** config and that `/jev-status` works. Check your OpenCode version (`opencode --version`, v2.2.7+ required). |
 | No status indicator | Same as above. Indicators need TUI slots or the Desktop GUI part. If they're missing, commands still work. |
 | Desktop shows no Jev indicator or commands, but the TUI does | The Desktop app loads GUI parts only from the **global** config, through its own background service. In isolated testing on 2.2.7, a GUI part added while that service was already running wasn't picked up until the service restarted (`opencode service restart`, which interrupts running sessions). |
 | No evaluations | Check the `trigger:` line in `/jev-status` (or the sidebar/pill): it names the reason, e.g. waiting for threshold or growth, cooldown, no eligible tool results, budget, or authentication. Use `/jev-compact` to force one. |
@@ -311,12 +308,12 @@ Jev is an external service, and this plugin is not local or offline while active
 | "Budget reached" | Wait for the next UTC day, raise `budget.*`, or set it to `null` (unlimited). |
 | TypeSafe outage | Nothing to do: requests go out unpruned. Optionally run `/jev-disable` to avoid retry delays. |
 | Something important seems missing | `/jev-reset` in that session, or `/jev-session-disable` to stop pruning it. |
-| Unsupported OpenCode version | Run `/jev-disable`, or remove the plugin entry. |
+| OpenCode older than v2.2.7 | Upgrade OpenCode, or remove the plugin entry. On a newer OpenCode that misbehaves, run `/jev-disable` and report the version. |
 
 ## Uninstall
 
 1. Remove the plugin entry from `plugins` in `opencode.jsonc`. OpenCode reloads automatically. (To keep it installed but stop all Jev requests, set `"mode": "off"` instead.)
-2. Optionally delete the checkout, `~/.config/opencode/typesafe-api-key` and `~/.local/state/opencode-jev/` (the accounting file and statistics snapshot).
+2. Optionally delete `~/.config/opencode/typesafe-api-key` and `~/.local/state/opencode-jev/` (the accounting file and statistics snapshot).
 
 This does not touch conversations, projects, provider credentials or other plugins. Plugin storage (mode and counters) stays inert inside OpenCode's database.
 
@@ -333,13 +330,13 @@ These are preliminary results under controlled conditions. They are **not** bill
   - Estimated tokens: 20,342 → 8,401 (11,941 removed, about 58.7%).
   - Characters: the same run measured 76,795 → 32,382 characters (57.8%). The two methods measure different things and shouldn't be mixed.
 - **Latency.** TypeSafe latency in that live test was a median of 341 ms (min 286, max 620) over 3 full-evaluation requests. Separately, a small sanity request took 630 ms. The sample is tiny.
-- **Tests.** 110 automated tests pass; 7 are skipped by default (5 opt-in live tests, 1 upstream HTTP-client test and 1 opt-in local session replay).
+- **Tests.** The automated suite (unit, acceptance, packaged-artifact installation) passes in CI; 7 tests are skipped by default (5 opt-in live tests, 1 upstream HTTP-client test and 1 opt-in local session replay).
 
 ### Real-world coding benchmark: pending
 
 No A/B comparison on real coding tasks has been completed, so there is no evidence yet about real bill reduction, cache effects or coding quality. A single-task pilot on 0.2.0 recorded zero Jev evaluations because of the trigger defect fixed in 0.2.1; it says nothing about savings.
 
-### Known limitations (0.2.1)
+### Known limitations
 
 - **Real-world cost savings are unmeasured.** Estimated context reduction is not a saving: pruning changes the request prefix and can add cache writes, and Jev has its own cost.
 - **Negative reduction statistics are unresolved.** Some sessions have shown negative estimated reduction figures in the statistics. The cause has not been investigated; treat the reduction and "tokens removed" figures as indicative only.
@@ -354,7 +351,8 @@ Jev's context optimization and session health work without any agent changes. Th
 - **Local only.** It reads the model catalogue OpenCode already exposes (capabilities, context limits, published pricing). It never makes inference requests and never probes providers.
 - **Deterministic.** Recommendations use tool support, reasoning capability, context size and known pricing — never display names, and never guessed prices or capabilities. Unknown metadata is reported as unknown.
 - **Presets.** Keep (default), Maximum quality, Balanced, Economy, or Custom per-role overrides. With a single provider or a single model it works within what you have and says so — cheaper delegation is simply unavailable, and it does not claim savings from assigning the same model to more agents.
-- **Explicit approval.** You see a preview (current model → recommended model, per role, with reasons and known/unknown pricing) before anything changes. Applying creates a unique timestamped backup of your configuration, changes only the `agent.<role>.model` field of approved roles (every other agent key — permissions, instructions, mode — is preserved), and shows the rollback path.
+- **Explicit approval.** You see a preview (current model → recommended model, per role, with reasons and known/unknown pricing) before anything changes. Applying creates a unique timestamped backup of your configuration, changes only the `agent.<role>.model` field of approved roles (or adds the approved new agents), and shows the rollback path. The file is edited in place: comments, trailing commas, formatting, other agent keys and every unrelated setting are kept exactly as they were. An invalid configuration file is refused and left untouched.
+- **Usage.** `/jev-setup` shows the preview for a preset; nothing is written until you approve the assignments. The default answer is to keep your configuration.
 
 Mixed-provider configurations can assign different providers to different roles; single-provider setups are never asked to add another. The assistant never changes provider routing, authentication or credentials.
 
@@ -380,8 +378,8 @@ https://github.com/GeekCubo/jev-opencode (README: "Quick start"). Then:
 1. Inspect my existing OpenCode configuration (~/.config/opencode/opencode.jsonc and any
    project opencode.json) WITHOUT changing it: providers, credentials, agents, permissions,
    other plugins.
-2. Install Jev using the documented method (npm package "jev-compaction" once published, or a
-   local checkout before publication). Do not clone into ~/.config/opencode/plugins.
+2. Confirm `opencode --version` is v2.2.7 or newer. Install Jev using the documented method:
+   the npm package "jev-compaction" as an entry in the global "plugins" array (no clone, no build).
 3. Configure the TypeSafe API key in ~/.config/opencode/typesafe-api-key (mode 600). Ask me for
    the key; never write it into opencode.jsonc or any other file.
 4. Add the plugin to my global config with mode "dry-run", preserving everything else in the
@@ -395,4 +393,5 @@ https://github.com/GeekCubo/jev-opencode (README: "Quick start"). Then:
 
 - **Original project.** [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction), the Claude Code plugin and pruning algorithm, by GitHub user `tamaratran`. MIT license. The adapted source is in `plugin/upstream/` with its license and change notes.
 - **OpenCode port.** Maintained by [GeekCubo](https://geekcubo.com). MIT license (see [LICENSE](LICENSE) and [NOTICE](NOTICE)).
+- **Not affiliated.** This project is not affiliated with or endorsed by OpenCode, TypeSafe or the upstream project's author.
 - **Jev** is TypeSafe's proprietary evaluation model and API. **OpenCode** is an independent project. Neither is owned by or affiliated with GeekCubo.

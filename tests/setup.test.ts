@@ -173,7 +173,7 @@ describe("configuration editing: preview, backup, apply, rollback", () => {
     expect(JSON.parse(readFileSync(edit.backupPath!, "utf8")).agent.build.model).toBe("anthropic/claude-sonnet-4")
   })
 
-  it("JSONC comments are parsed safely; the written file is valid JSON", () => {
+  it("JSONC comments are parsed safely and kept in the written file", () => {
     writeFileSync(cfgPath, `{
   // my schema
   "$schema": "https://opencode.ai/config.json",
@@ -181,7 +181,10 @@ describe("configuration editing: preview, backup, apply, rollback", () => {
   "agent": { /* build config */ "build": { "model": "a/b" } }
 }`)
     applyAgentAssignments(cfgPath, { build: "c/d" })
-    const after = JSON.parse(readFileSync(cfgPath, "utf8"))
+    const written = readFileSync(cfgPath, "utf8")
+    expect(written).toContain("// my schema")
+    expect(written).toContain("/* build config */")
+    const after = JSON.parse(stripComments(written))
     expect(after.theme).toBe("dark")
     expect(after.agent.build.model).toBe("c/d")
   })

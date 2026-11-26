@@ -8,6 +8,7 @@
  * or routing. The default is "keep my existing configuration".
  */
 import { readFileSync, writeFileSync, copyFileSync, existsSync, mkdirSync, renameSync } from "node:fs"
+import { applySplices, deepEqual, insertProperty, parse, parseTree, prop, type JsonValue, type Node, type Splice } from "./jsonc.ts"
 import { join } from "node:path"
 
 export type Preset = "keep" | "quality" | "balanced" | "economy" | "custom"
@@ -177,11 +178,15 @@ export interface ConfigEdit {
 
 /**
  * Applies approved agent-model assignments to global OpenCode configuration.
- * - Reads the existing file (JSON or JSONC).
+ * - Reads the existing file (JSON or JSONC: comments and trailing commas).
+ * - Refuses an invalid file without touching it.
  * - Backs it up to <dir>/backups/jev-agent-setup-<timestamp>.jsonc (never overwrites).
- * - Merges the `agent` object only: existing agent entries keep every other key
- *   (mode, permissions, tools, prompt, description...); only `model` changes.
- * - New agent entries (builder/reviewer) are added with the documented safe defaults.
+ * - Edits the text in place: only the `model` value of an existing agent is
+ *   replaced, and missing agents (or a missing `agent` object) are inserted.
+ *   Comments, formatting, other agent keys and every unrelated property are kept
+ *   byte for byte. The result is re-parsed and checked: if anything other than
+ *   the approved agent models would change, nothing is written.
+ * - New agent entries (builder/reviewer) get the documented safe defaults.
  * The write is atomic: written to a temp file, then renamed.
  */
 export function applyAgentAssignments(
@@ -189,25 +194,16 @@ export function applyAgentAssignments(
   assignments: Partial<Record<Role, string>>,
   options: { skipUnassigned?: boolean } = {},
 ): ConfigEdit {
-  const raw = existsSync(configPath) ? readFileSync(configPath, "utf8") : "{}"
-  // Parse with comments tolerated (JSONC): strip // and /* */ lines conservatively for VALUE
-  // extraction, but keep the original text for re-serialization of untouched parts is NOT
-  // attempted — OpenCode config files are machine-edited by OpenCode itself; we preserve
-  // the file's comments by editing only through a JSON.parse of a comment-stripped copy and
-  // writing standard JSON with 2-space indent when comments exist… Instead, to guarantee
-  // validity, we: (1) back up, (2) write the merged configuration as plain JSON.
-  const stripped = stripComments(raw)
-  let cfg: any
+  const exists = existsSync(configPath)
+  const raw = exists ? readFileSync(configPath, "utf8") : "{}\n"
+  let root: Node
   try {
-    cfg = JSON.parse(stripped)
+    root = parseTree(raw)
   } catch (e) {
     throw new Error(`existing configuration at ${configPath} is not valid JSON/JSONC: ${(e as Error).message}`)
   }
-  const backupPath = backupOf(configPath)
-  copyFileSync(configPath, backupPath)
+  if (root.type !== "object") throw new Error(`existing configuration at ${configPath} is not valid JSON/JSONC: top level is not an object`)
 
-  const changes: string[] = []
-  cfg.agent ??= {}
   const NEW_AGENTS: Partial<Record<Role, { description: string; mode: string; permissions: any }>> = {
     builder: {
       description: "Delegated implementation subagent for bounded coding tasks (added by /jev-setup).",
@@ -220,27 +216,74 @@ export function applyAgentAssignments(
       permissions: { deny: ["*"], allow: ["read", "grep", "glob", "lsp", "git diff", "git log", "git show"] },
     },
   }
+  const changes: string[] = []
+  const splices: Splice[] = []
+  const agentNode = prop(root, "agent")
+  if (agentNode && agentNode.type !== "object") throw new Error(`existing configuration at ${configPath}: "agent" is not an object; nothing changed`)
+  const newAgents: Record<string, JsonValue> = {}
+  const expected: any = structuredClone(root.value)
+  expected.agent ??= {}
   for (const [role, model] of Object.entries(assignments)) {
     if (!model) continue
     const r = role as Role
-    const existing = cfg.agent[r]
+    const existing = prop(agentNode, r)
+    if (existing && existing.type !== "object") throw new Error(`existing configuration at ${configPath}: agent.${r} is not an object; nothing changed`)
     if (existing) {
-      const oldModel = existing.model ?? "(unset)"
-      cfg.agent[r] = { ...existing, model }
+      const modelNode = prop(existing, "model")
+      const oldModel = (modelNode?.value as string | undefined) ?? "(unset)"
+      if (modelNode) splices.push({ at: modelNode.start, remove: modelNode.end - modelNode.start, insert: JSON.stringify(model) })
+      else splices.push({ ...asSplice(insertProperty(raw, existing, "model", model)) })
+      expected.agent[r] = { ...expected.agent[r], model }
       changes.push(`agent.${r}: model ${oldModel} → ${model} (other keys preserved)`)
-    } else if (NEW_AGENTS[r] && !options.skipUnassigned) {
-      cfg.agent[r] = { ...NEW_AGENTS[r]!, model }
-      changes.push(`agent.${r}: new agent (model ${model}, restricted permissions as documented)`)
     } else {
-      cfg.agent[r] = { model }
-      changes.push(`agent.${r}: model set to ${model}`)
+      const entry = NEW_AGENTS[r] && !options.skipUnassigned ? { ...NEW_AGENTS[r]!, model } : { model }
+      newAgents[r] = entry as JsonValue
+      expected.agent[r] = entry
+      changes.push(NEW_AGENTS[r] && !options.skipUnassigned
+        ? `agent.${r}: new agent (model ${model}, restricted permissions as documented)`
+        : `agent.${r}: model set to ${model}`)
     }
   }
-  const text = JSON.stringify(cfg, null, 2) + "\n"
+  if (Object.keys(newAgents).length) {
+    if (agentNode) {
+      for (const [k, v] of Object.entries(newAgents).reverse()) splices.push(asSplice(insertProperty(raw, agentNode, k, v)))
+    } else splices.push(asSplice(insertProperty(raw, root, "agent", newAgents)))
+  }
+  if (!changes.length) return { text: raw, backupPath: null, changes }
+  const text = mergeInsertsAt(raw, splices)
+  // Verify: the edited text parses and differs from the original only by the approved agent fields.
+  let after: JsonValue
+  try {
+    after = parse(text)
+  } catch (e) {
+    throw new Error(`internal edit produced invalid configuration; nothing changed (${(e as Error).message})`)
+  }
+  if (!deepEqual(after, expected)) throw new Error("internal edit verification failed; nothing changed")
+
+  const backupPath = exists ? backupOf(configPath) : null
+  if (backupPath) copyFileSync(configPath, backupPath)
   const tmp = `${configPath}.jev-tmp-${Date.now()}`
   writeFileSync(tmp, text, "utf8")
   renameSync(tmp, configPath)
   return { text, backupPath, changes }
+}
+
+const asSplice = (x: { at: number; insert: string }): Splice => ({ at: x.at, remove: 0, insert: x.insert })
+
+/** Several insertions at the same offset are concatenated in the order given. */
+const mergeInsertsAt = (text: string, edits: Splice[]): string => {
+  const byAt = new Map<number, Splice>()
+  const out: Splice[] = []
+  for (const e of edits) {
+    const prev = e.remove === 0 ? byAt.get(e.at) : undefined
+    if (prev) prev.insert += e.insert
+    else {
+      const copy = { ...e }
+      out.push(copy)
+      if (e.remove === 0) byAt.set(e.at, copy)
+    }
+  }
+  return applySplices(text, out)
 }
 
 /** Conservative comment stripper for JSONC parsing (strings preserved). */
@@ -304,7 +347,7 @@ export async function catalog(ctx: any): Promise<CatalogModel[]> {
 export function currentAssignments(configPath: string): Partial<Record<Role, string>> {
   if (!existsSync(configPath)) return {}
   try {
-    const cfg = JSON.parse(stripComments(readFileSync(configPath, "utf8")))
+    const cfg = parse(readFileSync(configPath, "utf8")) as any
     const out: Partial<Record<Role, string>> = {}
     for (const role of ["build", "plan", "builder", "reviewer", "general", "explore"] as Role[])
       if (typeof cfg.agent?.[role]?.model === "string") out[role] = cfg.agent[role].model

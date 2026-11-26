@@ -1,12 +1,40 @@
-# plugin/
+# jev-compaction
 
-The OpenCode plugin package. Point the `package` of your `plugins` entry at this directory.
+Jev Compaction for [OpenCode](https://opencode.ai): trims stale tool output from the context sent to your coding model, using [TypeSafe](https://typesafe.ai)'s Jev evaluation model. Instructions, conversation text and recent work are kept verbatim, and OpenCode's stored history is never modified.
 
-- `index.ts`: the server part. Uses the `context`, `compaction` and `generate` hooks; RPC; events; an optional agent transform.
-- `tui.tsx`, `dist/gui-experimental.cjs` (built from `gui.tsx`): the TUI and Desktop parts, which provide the seven `/jev-*` commands and the status indicators.
-- `rpc.ts`: the typed contract shared by the parts.
-- `upstream/`: code adapted from fast-jev-compaction (MIT); see `upstream/NOTICE.md`.
+**Requires OpenCode v2.2.7 or newer.** Owner-confirmed working on OpenCode v2.4.2.
 
-The `serverCommands: true` option additionally registers server-side commands for clients without the TUI or Desktop part. Their output is delivered through OpenCode's error path, so those clients show it as an error notice. It is off by default and not recommended.
+Jev evaluations use a **remote** service (TypeSafe Direct or OpenCode Zen) and need your own TypeSafe API key; they are billed separately from your coding-model provider. Real-world cost savings have not been measured.
 
-Usage, configuration, privacy and troubleshooting are covered in the repository [README](../README.md). Architecture is in [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md).
+## Install
+
+1. Store your key (never in `opencode.jsonc`):
+
+   ```sh
+   umask 077
+   printf '%s' 'YOUR_TYPESAFE_KEY' > ~/.config/opencode/typesafe-api-key
+   ```
+
+2. Add the plugin to the `plugins` array of your global `~/.config/opencode/opencode.jsonc`:
+
+   ```jsonc
+   "plugins": [
+     { "package": "jev-compaction", "options": { "mode": "dry-run" } }
+   ]
+   ```
+
+   Use `"jev-compaction@0.3.0"` to pin this release.
+
+3. Run `/reload` in the TUI (or reopen the Desktop window), then `/jev-status`.
+
+OpenCode installs the package itself; no clone, build or separate service is needed. The Desktop bundle is included.
+
+## Commands
+
+`/jev-status`, `/jev-stats`, `/jev-enable`, `/jev-dry-run`, `/jev-disable`, `/jev-reset`, `/jev-compact`, session overrides (`/jev-session-*`), `/jev-health`, `/jev-handover` and the optional agent-configuration assistant `/jev-setup` (preview and explicit approval; edits keep your JSONC comments and every unrelated setting; timestamped backup first).
+
+## More
+
+Configuration, privacy and data flow, troubleshooting, uninstall and known limitations: [github.com/GeekCubo/jev-opencode](https://github.com/GeekCubo/jev-opencode).
+
+OpenCode port of [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction) (MIT). Maintained by GeekCubo; MIT license (see `LICENSE` and `NOTICE`). Not affiliated with or endorsed by OpenCode, TypeSafe or the upstream author.

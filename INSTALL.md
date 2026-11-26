@@ -1,8 +1,12 @@
 # Installation
 
-Requires OpenCode 2.2.7, Git, and a TypeSafe API key (or an OpenCode Zen account; see the README). Node.js 22.6+ is needed only for development and the CLI statistics reader.
+**Requires OpenCode v2.2.7 or newer** and a TypeSafe API key (or an OpenCode Zen account; see the README).
 
-## Install
+**Normal installation uses the npm package `jev-compaction`; see the README "Quick start".** No clone or build is needed.
+
+This file covers installing from a checkout (development, or testing unreleased changes). That needs Git; Node.js 22.6+ is needed only for development and the CLI statistics reader.
+
+## Install from a checkout
 
 1. Clone the repository outside `~/.config/opencode/plugins/` (that directory auto-loads plugins):
 
@@ -32,7 +36,7 @@ Requires OpenCode 2.2.7, Git, and a TypeSafe API key (or an OpenCode Zen account
 
 4. Config changes apply automatically. Run `/reload` in open TUIs, or reopen the Desktop window. Then run `/jev-status`; it should show `mode=dry-run`.
 
-No `npm install` is needed to run the plugin. The server and TUI parts are TypeScript loaded by OpenCode, which supplies `@opencode/plugin`, `solid-js` and `@opentui/*` at runtime. The Desktop part is the prebuilt `plugin/dist/gui-experimental.cjs`. This was verified with a fresh clone that had no `node_modules`, on OpenCode 2.2.7.
+No `npm install` is needed to run the plugin. The server and TUI parts are TypeScript loaded by OpenCode, which supplies `@opencode/plugin`, `solid-js` and `@opentui/*` at runtime. The Desktop part is the prebuilt `plugin/dist/gui-experimental.cjs`. This was verified with a fresh clone that had no `node_modules`, on OpenCode v2.2.7.
 
 ## Build from source (optional)
 
